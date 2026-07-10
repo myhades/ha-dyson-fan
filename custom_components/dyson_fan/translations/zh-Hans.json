@@ -1,0 +1,104 @@
+{
+  "title": "Dyson Fan",
+  "config": {
+    "step": {
+      "user": {
+        "title": "配置功率反馈和红外动作",
+        "description": "请选择一个频繁更新的功率传感器，并配置控制风扇的四个动作。收到多次稳定功率上报前，风扇实体会保持不可用。",
+        "data": {
+          "power_sensor": "功率传感器",
+          "power_toggle_action": "电源切换动作",
+          "oscillation_toggle_action": "摆风切换动作",
+          "speed_up_action": "提高风速动作",
+          "speed_down_action": "降低风速动作",
+          "burst_button": "功率反馈 Burst 按钮（可选）"
+        },
+        "data_description": {
+          "burst_button": "临时提高功率计上报速度的 ESPHome 按钮。"
+        }
+      },
+      "reconfigure": {
+        "title": "重新配置反馈和动作",
+        "data": {
+          "power_sensor": "功率传感器",
+          "power_toggle_action": "电源切换动作",
+          "oscillation_toggle_action": "摆风切换动作",
+          "speed_up_action": "提高风速动作",
+          "speed_down_action": "降低风速动作",
+          "burst_button": "功率反馈 Burst 按钮（可选）"
+        },
+        "data_description": {
+          "burst_button": "临时提高功率计上报速度的 ESPHome 按钮。"
+        }
+      }
+    },
+    "error": {
+      "invalid_action": "请至少选择一个有效的 Home Assistant 动作。"
+    },
+    "abort": {
+      "reconfigure_successful": "Dyson Fan 已成功重新配置。"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "menu_options": {
+          "control": "控制行为",
+          "power_table": "功率特征表"
+        },
+        "menu_option_descriptions": {
+          "control": "修改尝试次数和两次红外发送之间的间隔。",
+          "power_table": "修改用于识别各档风速和摆风状态的功率。"
+        }
+      },
+      "control": {
+        "title": "控制行为",
+        "data": {
+          "max_attempts": "最大尝试次数",
+          "ir_send_interval": "红外发送间隔"
+        },
+        "data_description": {
+          "max_attempts": "首次完整发送计为一次尝试。只有稳定反馈与目标不符时才会进行额外尝试。",
+          "ir_send_interval": "连续执行两个红外动作之间的时间。"
+        }
+      },
+      "power_table": {
+        "title": "功率特征表",
+        "description": "输入每种风扇物理状态下的典型实测功率。",
+        "data": {
+          "power_off": "关机",
+          "power_speed_1_stationary": "1 档，不摆风",
+          "power_speed_1_oscillating": "1 档，摆风",
+          "power_speed_2_stationary": "2 档，不摆风",
+          "power_speed_2_oscillating": "2 档，摆风",
+          "power_speed_3_stationary": "3 档，不摆风",
+          "power_speed_3_oscillating": "3 档，摆风",
+          "power_speed_4_stationary": "4 档，不摆风",
+          "power_speed_4_oscillating": "4 档，摆风",
+          "power_speed_5_stationary": "5 档，不摆风",
+          "power_speed_5_oscillating": "5 档，摆风",
+          "power_speed_6_stationary": "6 档，不摆风",
+          "power_speed_6_oscillating": "6 档，摆风",
+          "power_speed_7_stationary": "7 档，不摆风",
+          "power_speed_7_oscillating": "7 档，摆风",
+          "power_speed_8_stationary": "8 档，不摆风",
+          "power_speed_8_oscillating": "8 档，摆风",
+          "power_speed_9_stationary": "9 档，不摆风",
+          "power_speed_9_oscillating": "9 档，摆风",
+          "power_speed_10_stationary": "10 档，不摆风",
+          "power_speed_10_oscillating": "10 档，摆风"
+        }
+      }
+    },
+    "error": {
+      "invalid_power_table": "功率必须随档位升高而增加，并且每档的摆风功率必须高于不摆风功率。"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "diagnostics": {
+        "name": "诊断"
+      }
+    }
+  }
+}

@@ -1,0 +1,30 @@
+# Merge this example into the ESPHome node that owns the power meter.
+# Change `dyson_energy_monitor` to the id of your BL0942 component.
+
+sensor:
+  - platform: bl0942
+    id: dyson_energy_monitor
+    update_interval: 2s
+    power:
+      name: Dyson Power
+    # Keep the other BL0942 sensors from your existing configuration here.
+
+script:
+  - id: dyson_power_feedback_burst
+    mode: restart
+    then:
+      - component.resume:
+          id: dyson_energy_monitor
+          update_interval: 500ms
+      - component.update: dyson_energy_monitor
+      - delay: 10s
+      - component.resume:
+          id: dyson_energy_monitor
+          update_interval: 2s
+
+button:
+  - platform: template
+    name: Power Feedback Burst
+    entity_category: diagnostic
+    on_press:
+      - script.execute: dyson_power_feedback_burst

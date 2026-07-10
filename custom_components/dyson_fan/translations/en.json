@@ -1,0 +1,104 @@
+{
+  "title": "Dyson Fan",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up power feedback and infrared actions",
+        "description": "Select a frequently updated power sensor and configure the four actions that control your fan. The fan entity remains unavailable until several stable power reports have been received.",
+        "data": {
+          "power_sensor": "Power sensor",
+          "power_toggle_action": "Power toggle action",
+          "oscillation_toggle_action": "Oscillation toggle action",
+          "speed_up_action": "Speed up action",
+          "speed_down_action": "Speed down action",
+          "burst_button": "Power feedback burst button (optional)"
+        },
+        "data_description": {
+          "burst_button": "An ESPHome button that temporarily increases the power meter's reporting rate."
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigure feedback and actions",
+        "data": {
+          "power_sensor": "Power sensor",
+          "power_toggle_action": "Power toggle action",
+          "oscillation_toggle_action": "Oscillation toggle action",
+          "speed_up_action": "Speed up action",
+          "speed_down_action": "Speed down action",
+          "burst_button": "Power feedback burst button (optional)"
+        },
+        "data_description": {
+          "burst_button": "An ESPHome button that temporarily increases the power meter's reporting rate."
+        }
+      }
+    },
+    "error": {
+      "invalid_action": "Select at least one valid Home Assistant action."
+    },
+    "abort": {
+      "reconfigure_successful": "Dyson Fan was reconfigured successfully."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "menu_options": {
+          "control": "Control behavior",
+          "power_table": "Power signature table"
+        },
+        "menu_option_descriptions": {
+          "control": "Change retry behavior and the interval between infrared transmissions.",
+          "power_table": "Change the wattage used to recognize each speed and oscillation state."
+        }
+      },
+      "control": {
+        "title": "Control behavior",
+        "data": {
+          "max_attempts": "Maximum attempts",
+          "ir_send_interval": "Infrared send interval"
+        },
+        "data_description": {
+          "max_attempts": "A complete initial command is one attempt. Additional attempts are only made after stable feedback does not match the target.",
+          "ir_send_interval": "Time between consecutive infrared action executions."
+        }
+      },
+      "power_table": {
+        "title": "Power signature table",
+        "description": "Enter the typical measured power for every physical fan state.",
+        "data": {
+          "power_off": "Off",
+          "power_speed_1_stationary": "Speed 1, stationary",
+          "power_speed_1_oscillating": "Speed 1, oscillating",
+          "power_speed_2_stationary": "Speed 2, stationary",
+          "power_speed_2_oscillating": "Speed 2, oscillating",
+          "power_speed_3_stationary": "Speed 3, stationary",
+          "power_speed_3_oscillating": "Speed 3, oscillating",
+          "power_speed_4_stationary": "Speed 4, stationary",
+          "power_speed_4_oscillating": "Speed 4, oscillating",
+          "power_speed_5_stationary": "Speed 5, stationary",
+          "power_speed_5_oscillating": "Speed 5, oscillating",
+          "power_speed_6_stationary": "Speed 6, stationary",
+          "power_speed_6_oscillating": "Speed 6, oscillating",
+          "power_speed_7_stationary": "Speed 7, stationary",
+          "power_speed_7_oscillating": "Speed 7, oscillating",
+          "power_speed_8_stationary": "Speed 8, stationary",
+          "power_speed_8_oscillating": "Speed 8, oscillating",
+          "power_speed_9_stationary": "Speed 9, stationary",
+          "power_speed_9_oscillating": "Speed 9, oscillating",
+          "power_speed_10_stationary": "Speed 10, stationary",
+          "power_speed_10_oscillating": "Speed 10, oscillating"
+        }
+      }
+    },
+    "error": {
+      "invalid_power_table": "Power values must increase with speed, and oscillating power must exceed stationary power at the same speed."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "diagnostics": {
+        "name": "Diagnostics"
+      }
+    }
+  }
+}
