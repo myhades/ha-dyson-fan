@@ -95,9 +95,22 @@
     }
   },
   "entity": {
+    "button": {
+      "calibrate_power_table": {
+        "name": "Calibrate power table"
+      }
+    },
     "sensor": {
       "diagnostics": {
-        "name": "Diagnostics"
+        "name": "Diagnostics",
+        "state": {
+          "initializing": "Initializing",
+          "idle": "Idle",
+          "sending": "Sending infrared commands",
+          "waiting_feedback": "Waiting for feedback",
+          "calibrating": "Calibrating",
+          "error": "Error"
+        }
       }
     }
   }

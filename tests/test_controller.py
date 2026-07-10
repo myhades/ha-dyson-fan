@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock
 
+from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.core import Context, HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.dyson_fan import DysonFanRuntimeData
 from custom_components.dyson_fan.const import (
     CONF_IR_SEND_INTERVAL,
     CONF_MAX_ATTEMPTS,
@@ -17,9 +19,11 @@ from custom_components.dyson_fan.const import (
     CONF_SPEED_DOWN_ACTION,
     CONF_SPEED_UP_ACTION,
     DOMAIN,
+    ControllerPhase,
 )
 from custom_components.dyson_fan.controller import DysonFanController
 from custom_components.dyson_fan.models import Command, FanState, TargetState
+from custom_components.dyson_fan.sensor import DysonFanDiagnosticsSensor
 
 
 def _entry() -> MockConfigEntry:
@@ -38,6 +42,18 @@ def _entry() -> MockConfigEntry:
         },
         options={CONF_MAX_ATTEMPTS: 1, CONF_IR_SEND_INTERVAL: 0},
     )
+
+
+async def test_diagnostics_attributes_omit_power_table(hass: HomeAssistant) -> None:
+    """Diagnostics use translated enum states without duplicating editable options."""
+    entry = _entry()
+    controller = DysonFanController(hass, entry, entry.data)
+    entry.runtime_data = DysonFanRuntimeData(controller)
+    sensor = DysonFanDiagnosticsSensor(entry)
+
+    assert sensor.device_class is SensorDeviceClass.ENUM
+    assert sensor.options == [phase.value for phase in ControllerPhase]
+    assert "power_signatures" not in controller.diagnostics()
 
 
 async def test_oscillation_precedes_multi_step_speed_change(

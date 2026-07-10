@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Final
 
 from homeassistant.const import Platform
@@ -9,7 +10,7 @@ from homeassistant.const import Platform
 DOMAIN: Final = "dyson_fan"
 DEFAULT_NAME: Final = "Dyson Fan"
 
-PLATFORMS: Final = [Platform.FAN, Platform.SENSOR]
+PLATFORMS: Final = [Platform.FAN, Platform.SENSOR, Platform.BUTTON]
 
 CONF_POWER_SENSOR: Final = "power_sensor"
 CONF_POWER_TOGGLE_ACTION: Final = "power_toggle_action"
@@ -47,11 +48,38 @@ PERSIST_DELAY_SECONDS: Final = 5.0
 STORAGE_VERSION: Final = 1
 STORAGE_KEY_PREFIX: Final = f"{DOMAIN}.state"
 
-STATE_INITIALIZING: Final = "initializing"
-STATE_IDLE: Final = "idle"
-STATE_SENDING: Final = "sending"
-STATE_WAITING_FEEDBACK: Final = "waiting_feedback"
-STATE_ERROR: Final = "error"
+
+class ControllerPhase(StrEnum):
+    """Possible states of the feedback controller."""
+
+    INITIALIZING = "initializing"
+    IDLE = "idle"
+    SENDING = "sending"
+    WAITING_FEEDBACK = "waiting_feedback"
+    CALIBRATING = "calibrating"
+    ERROR = "error"
+
+
+STATE_INITIALIZING: Final = ControllerPhase.INITIALIZING
+STATE_IDLE: Final = ControllerPhase.IDLE
+STATE_SENDING: Final = ControllerPhase.SENDING
+STATE_WAITING_FEEDBACK: Final = ControllerPhase.WAITING_FEEDBACK
+STATE_CALIBRATING: Final = ControllerPhase.CALIBRATING
+STATE_ERROR: Final = ControllerPhase.ERROR
+
+CALIBRATION_INITIAL_COMMANDS: Final = 15
+CALIBRATION_IR_SEND_INTERVAL_SECONDS: Final = 1.0
+CALIBRATION_PROBE_COMMANDS: Final = 2
+CALIBRATION_UNCHANGED_PROBES: Final = 2
+CALIBRATION_MAX_PROBES: Final = 6
+CALIBRATION_MEASUREMENT_SAMPLES: Final = 5
+CALIBRATION_MEASUREMENT_TIMEOUT_SECONDS: Final = 20.0
+CALIBRATION_MEASUREMENT_SETTLE_SECONDS: Final = 1.0
+CALIBRATION_STABILITY_FLOOR_WATTS: Final = 0.6
+CALIBRATION_STABILITY_RATIO: Final = 0.025
+CALIBRATION_ENDPOINT_CHANGE_FLOOR_WATTS: Final = 0.8
+CALIBRATION_ENDPOINT_CHANGE_RATIO: Final = 0.02
+CALIBRATION_RESTORE_TIMEOUT_SECONDS: Final = 60.0
 
 
 def power_signature_key(speed: int, oscillating: bool) -> str:

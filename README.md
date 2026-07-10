@@ -97,6 +97,19 @@ rate after commands. A ready-to-adapt example is included at
 
 The integration works without this button; feedback will simply take longer.
 
+## Automatic calibration
+
+Use the **Calibrate power table** button on the device page to adapt the
+included power signatures to your fan and power meter. Calibration turns the
+fan off, drives it to stationary speed 1 and speed 10, checks each endpoint
+with redundant commands, and then restores the previous power, speed, and
+oscillation state.
+
+The fan will run through these states for several minutes. Keep its power
+sensor updating and do not use the remote during calibration. A Home Assistant
+fan command safely cancels calibration at the next infrared-command boundary;
+an incomplete or unreasonable measurement never replaces the existing table.
+
 ## Diagnostics
 
 Dyson Fan creates one disabled diagnostic sensor. Enable it from the device's
@@ -112,8 +125,9 @@ Downloadable diagnostics are also available from the integration page.
 - The power sensor should measure only the fan.
 - Speed cannot be observed while the fan is off. The last confirmed speed is
   remembered across Home Assistant restarts.
-- Automatic power-table calibration is planned but not included in the first
-  release.
+- Calibration updates the existing table by scaling it from the measured
+  stationary speed 1 and speed 10 endpoints; it does not separately measure
+  every oscillating state.
 
 ## Feedback
 

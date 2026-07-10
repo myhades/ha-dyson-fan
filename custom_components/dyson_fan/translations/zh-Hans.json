@@ -95,9 +95,22 @@
     }
   },
   "entity": {
+    "button": {
+      "calibrate_power_table": {
+        "name": "校准功率特征表"
+      }
+    },
     "sensor": {
       "diagnostics": {
-        "name": "诊断"
+        "name": "诊断",
+        "state": {
+          "initializing": "初始化中",
+          "idle": "空闲",
+          "sending": "正在发送红外命令",
+          "waiting_feedback": "正在等待反馈",
+          "calibrating": "正在校准",
+          "error": "错误"
+        }
       }
     }
   }

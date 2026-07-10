@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
-from homeassistant.components.sensor import SensorEntity
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import DysonFanConfigEntry
+from .const import ControllerPhase
 from .entity import DysonFanEntity
 
 
@@ -29,6 +30,8 @@ class DysonFanDiagnosticsSensor(DysonFanEntity, SensorEntity):
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_entity_registry_enabled_default = False
     _attr_icon = "mdi:state-machine"
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options: ClassVar[list[str]] = [phase.value for phase in ControllerPhase]
 
     def __init__(self, entry: DysonFanConfigEntry) -> None:
         """Initialize the diagnostics entity."""
@@ -36,7 +39,7 @@ class DysonFanDiagnosticsSensor(DysonFanEntity, SensorEntity):
         self._attr_unique_id = f"{entry.entry_id}_diagnostics"
 
     @property
-    def native_value(self) -> str:
+    def native_value(self) -> ControllerPhase:
         """Return the current controller phase."""
         return self.controller.phase
 

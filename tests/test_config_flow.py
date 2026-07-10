@@ -7,6 +7,7 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import STATE_OFF, STATE_UNAVAILABLE
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers.translation import async_get_translations
 
 from custom_components.dyson_fan.const import (
     CONF_OSCILLATION_TOGGLE_ACTION,
@@ -45,6 +46,16 @@ async def test_user_flow(hass: HomeAssistant) -> None:
     await hass.async_block_till_done()
     assert result["result"].state is ConfigEntryState.LOADED
     assert hass.states.get("fan.dyson_fan").state == STATE_UNAVAILABLE
+    assert hass.states.get("button.dyson_fan_calibrate_power_table") is not None
+    translations = await async_get_translations(
+        hass, "zh-Hans", "entity", integrations={DOMAIN}
+    )
+    assert (
+        translations[
+            "component.dyson_fan.entity.sensor.diagnostics.state.waiting_feedback"
+        ]
+        == "正在等待反馈"
+    )
 
     # Repeated writes of the same wattage arrive through state_reported and must
     # count as separate feedback samples.
