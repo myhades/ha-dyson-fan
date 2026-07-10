@@ -8,8 +8,12 @@ from homeassistant.const import STATE_OFF, STATE_UNAVAILABLE
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers.translation import async_get_translations
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.dyson_fan import async_migrate_entry
 from custom_components.dyson_fan.const import (
+    CONF_FEEDBACK_BURST_ACTION,
+    CONF_LEGACY_BURST_BUTTON,
     CONF_OSCILLATION_TOGGLE_ACTION,
     CONF_POWER_SENSOR,
     CONF_POWER_TOGGLE_ACTION,
@@ -54,7 +58,7 @@ async def test_user_flow(hass: HomeAssistant) -> None:
         translations[
             "component.dyson_fan.entity.sensor.diagnostics.state.waiting_feedback"
         ]
-        == "正在等待反馈"
+        == "等待反馈"
     )
 
     # Repeated writes of the same wattage arrive through state_reported and must
@@ -108,6 +112,67 @@ async def test_options_flow(hass: HomeAssistant) -> None:
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert entry.options["max_attempts"] == 2
     assert entry.options["ir_send_interval"] == 0.5
+
+
+async def test_options_flow_edits_feedback_and_actions(
+    hass: HomeAssistant,
+) -> None:
+    """The options menu also exposes config-entry entities and actions."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], _valid_input()
+    )
+    entry = result["result"]
+    original_options = dict(entry.options)
+    await hass.async_block_till_done()
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] is FlowResultType.MENU
+    assert "configuration" in result["menu_options"]
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "configuration"}
+    )
+    assert result["type"] is FlowResultType.FORM
+
+    updated = _valid_input()
+    updated[CONF_POWER_SENSOR] = "sensor.new_dyson_power"
+    updated[CONF_FEEDBACK_BURST_ACTION] = [{"event": "dyson_feedback_burst"}]
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], updated
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.data[CONF_POWER_SENSOR] == "sensor.new_dyson_power"
+    assert entry.data[CONF_FEEDBACK_BURST_ACTION] == [{"event": "dyson_feedback_burst"}]
+    assert entry.options == original_options
+    await hass.async_block_till_done()
+    assert entry.state is ConfigEntryState.LOADED
+
+
+async def test_version_1_burst_button_migrates_to_action(
+    hass: HomeAssistant,
+) -> None:
+    """Existing button selections become equivalent generic HA actions."""
+    data = _valid_input()
+    data[CONF_LEGACY_BURST_BUTTON] = "button.dyson_power_burst"
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        version=1,
+        data=data,
+        options={},
+    )
+    entry.add_to_hass(hass)
+
+    assert await async_migrate_entry(hass, entry)
+    assert entry.version == 2
+    assert CONF_LEGACY_BURST_BUTTON not in entry.data
+    assert entry.data[CONF_FEEDBACK_BURST_ACTION] == [
+        {
+            "action": "button.press",
+            "target": {"entity_id": "button.dyson_power_burst"},
+        }
+    ]
 
 
 async def test_reconfigure_flow(hass: HomeAssistant) -> None:

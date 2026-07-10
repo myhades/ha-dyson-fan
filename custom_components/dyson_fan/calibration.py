@@ -3,13 +3,25 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import MappingProxyType
 
-from .const import MAX_SANE_POWER_WATTS
+from .const import (
+    DEFAULT_POWER_OFF,
+    DEFAULT_POWER_SIGNATURES,
+    MAX_SANE_POWER_WATTS,
+)
 from .power import PowerSignatureTable
 
 MIN_CALIBRATION_SPAN_WATTS = 20.0
 MIN_ENDPOINT_FACTOR = 0.5
 MAX_ENDPOINT_FACTOR = 1.75
+
+# Always calibrate from this immutable factory curve. Using the active table here
+# would compound manual edits and previous calibration runs.
+CALIBRATION_REFERENCE_TABLE = PowerSignatureTable(
+    off=DEFAULT_POWER_OFF,
+    speeds=MappingProxyType(dict(DEFAULT_POWER_SIGNATURES)),
+)
 
 
 class CalibrationError(RuntimeError):
@@ -22,7 +34,7 @@ class CalibrationCancelled(CalibrationError):
 
 @dataclass(frozen=True, slots=True)
 class CalibrationResult:
-    """A validated affine update of a power signature table."""
+    """A validated projection of the built-in non-linear reference curve."""
 
     table: PowerSignatureTable
     off_watts: float
@@ -33,14 +45,13 @@ class CalibrationResult:
 
 
 def build_calibrated_table(
-    current: PowerSignatureTable,
     off_watts: float,
     speed_1_watts: float,
     speed_10_watts: float,
 ) -> CalibrationResult:
-    """Validate measured endpoints and linearly transform all running states."""
-    current_low = current.speeds[(1, False)]
-    current_high = current.speeds[(10, False)]
+    """Map the immutable non-linear reference curve onto measured endpoints."""
+    reference_low = CALIBRATION_REFERENCE_TABLE.speeds[(1, False)]
+    reference_high = CALIBRATION_REFERENCE_TABLE.speeds[(10, False)]
 
     if not 0 <= off_watts < speed_1_watts < speed_10_watts < MAX_SANE_POWER_WATTS:
         raise CalibrationError(
@@ -51,22 +62,25 @@ def build_calibrated_table(
     if speed_10_watts - speed_1_watts < MIN_CALIBRATION_SPAN_WATTS:
         raise CalibrationError("The measured speed range is too small")
     if not (
-        current_low * MIN_ENDPOINT_FACTOR
+        reference_low * MIN_ENDPOINT_FACTOR
         <= speed_1_watts
-        <= current_low * MAX_ENDPOINT_FACTOR
+        <= reference_low * MAX_ENDPOINT_FACTOR
     ):
         raise CalibrationError("The measured speed 1 power is outside the safe range")
     if not (
-        current_high * MIN_ENDPOINT_FACTOR
+        reference_high * MIN_ENDPOINT_FACTOR
         <= speed_10_watts
-        <= min(current_high * MAX_ENDPOINT_FACTOR, MAX_SANE_POWER_WATTS)
+        <= min(reference_high * MAX_ENDPOINT_FACTOR, MAX_SANE_POWER_WATTS)
     ):
         raise CalibrationError("The measured speed 10 power is outside the safe range")
 
-    scale = (speed_10_watts - speed_1_watts) / (current_high - current_low)
-    offset = speed_1_watts - scale * current_low
+    scale = (speed_10_watts - speed_1_watts) / (reference_high - reference_low)
+    offset = speed_1_watts - scale * reference_low
     transformed = {
-        state: scale * watts + offset for state, watts in current.speeds.items()
+        state: speed_1_watts
+        + ((watts - reference_low) / (reference_high - reference_low))
+        * (speed_10_watts - speed_1_watts)
+        for state, watts in CALIBRATION_REFERENCE_TABLE.speeds.items()
     }
     if any(not 0 < watts < MAX_SANE_POWER_WATTS for watts in transformed.values()):
         raise CalibrationError("The transformed power table exceeds safe limits")

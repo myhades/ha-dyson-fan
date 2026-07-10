@@ -24,7 +24,7 @@ class DysonFanCalibrationButton(DysonFanEntity, ButtonEntity):
     """Start a guarded automatic calibration run."""
 
     _attr_translation_key = "calibrate_power_table"
-    _attr_entity_category = EntityCategory.CONFIG
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_icon = "mdi:tune-variant"
 
     def __init__(self, entry: DysonFanConfigEntry) -> None:

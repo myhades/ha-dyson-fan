@@ -56,7 +56,7 @@ The setup flow asks for:
 - the oscillation toggle action;
 - the speed up action;
 - the speed down action;
-- an optional power-feedback burst button.
+- an optional power-feedback burst action.
 
 Actions can contain one or more normal Home Assistant action steps. For
 example, a Broadlink command can be configured as:
@@ -81,6 +81,8 @@ stable physical state has been recognized.
 
 The integration's options page provides:
 
+- **Feedback and actions** — changes the power sensor, optional feedback burst
+  action, and four infrared actions.
 - **Maximum attempts** — defaults to one complete command attempt.
 - **Infrared send interval** — defaults to 0.35 seconds.
 - **Power signature table** — the expected wattage for all 21 observable
@@ -89,21 +91,23 @@ The integration's options page provides:
 The default table is based on one 10-speed Dyson tower fan. Adjust it if your
 measurements differ.
 
-## Faster ESPHome feedback
+## Faster power feedback
 
-An optional ESPHome button can temporarily increase the power meter's update
-rate after commands. A ready-to-adapt example is included at
+The optional feedback burst action runs whenever the integration wants fresh
+power readings more quickly. It may call any Home Assistant action, script, or
+service suitable for the configured power meter. An ESPHome example is included at
 [`examples/esphome_power_burst.yaml`](examples/esphome_power_burst.yaml).
 
-The integration works without this button; feedback will simply take longer.
+The integration works without this action; feedback will simply take longer.
 
 ## Automatic calibration
 
 Use the **Calibrate power table** button on the device page to adapt the
 included power signatures to your fan and power meter. Calibration turns the
-fan off, drives it to stationary speed 1 and speed 10, checks each endpoint
-with redundant commands, and then restores the previous power, speed, and
-oscillation state.
+fan off, waits for the hardware power cycle to clear oscillation, drives it to
+stationary speed 1 and speed 10, checks each endpoint with redundant commands,
+and then restores the previous power, speed, and oscillation state. Calibration
+never sends the oscillation command while measuring endpoints.
 
 The fan will run through these states for several minutes. Keep its power
 sensor updating and do not use the remote during calibration. A Home Assistant
@@ -125,9 +129,9 @@ Downloadable diagnostics are also available from the integration page.
 - The power sensor should measure only the fan.
 - Speed cannot be observed while the fan is off. The last confirmed speed is
   remembered across Home Assistant restarts.
-- Calibration updates the existing table by scaling it from the measured
-  stationary speed 1 and speed 10 endpoints; it does not separately measure
-  every oscillating state.
+- Calibration projects the built-in non-linear reference curve onto the
+  measured stationary speed 1 and speed 10 endpoints; it does not separately
+  measure every intermediate or oscillating state.
 
 ## Feedback
 

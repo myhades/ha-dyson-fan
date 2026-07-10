@@ -11,10 +11,10 @@
           "oscillation_toggle_action": "Oscillation toggle action",
           "speed_up_action": "Speed up action",
           "speed_down_action": "Speed down action",
-          "burst_button": "Power feedback burst button (optional)"
+          "feedback_burst_action": "Power feedback burst action (optional)"
         },
         "data_description": {
-          "burst_button": "An ESPHome button that temporarily increases the power meter's reporting rate."
+          "feedback_burst_action": "An action run when faster power feedback is requested."
         }
       },
       "reconfigure": {
@@ -25,10 +25,10 @@
           "oscillation_toggle_action": "Oscillation toggle action",
           "speed_up_action": "Speed up action",
           "speed_down_action": "Speed down action",
-          "burst_button": "Power feedback burst button (optional)"
+          "feedback_burst_action": "Power feedback burst action (optional)"
         },
         "data_description": {
-          "burst_button": "An ESPHome button that temporarily increases the power meter's reporting rate."
+          "feedback_burst_action": "An action run when faster power feedback is requested."
         }
       }
     },
@@ -43,12 +43,28 @@
     "step": {
       "init": {
         "menu_options": {
+          "configuration": "Feedback and actions",
           "control": "Control behavior",
           "power_table": "Power signature table"
         },
         "menu_option_descriptions": {
+          "configuration": "Change the power sensor, feedback burst action, and infrared actions.",
           "control": "Change retry behavior and the interval between infrared transmissions.",
           "power_table": "Change the wattage used to recognize each speed and oscillation state."
+        }
+      },
+      "configuration": {
+        "title": "Feedback and actions",
+        "data": {
+          "power_sensor": "Power sensor",
+          "power_toggle_action": "Power toggle action",
+          "oscillation_toggle_action": "Oscillation toggle action",
+          "speed_up_action": "Speed up action",
+          "speed_down_action": "Speed down action",
+          "feedback_burst_action": "Power feedback burst action (optional)"
+        },
+        "data_description": {
+          "feedback_burst_action": "An action run when faster power feedback is requested."
         }
       },
       "control": {
@@ -91,6 +107,7 @@
       }
     },
     "error": {
+      "invalid_action": "Select at least one valid Home Assistant action.",
       "invalid_power_table": "Power values must increase with speed, and oscillating power must exceed stationary power at the same speed."
     }
   },

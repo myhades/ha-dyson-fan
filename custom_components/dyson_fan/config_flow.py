@@ -24,7 +24,7 @@ from homeassistant.helpers.selector import (
 
 from .const import (
     ACTION_KEYS,
-    CONF_BURST_BUTTON,
+    CONF_FEEDBACK_BURST_ACTION,
     CONF_IR_SEND_INTERVAL,
     CONF_MAX_ATTEMPTS,
     CONF_OSCILLATION_TOGGLE_ACTION,
@@ -63,9 +63,7 @@ def _configuration_schema(suggested: dict[str, Any] | None = None) -> vol.Schema
             marker(CONF_OSCILLATION_TOGGLE_ACTION): ActionSelector(),
             marker(CONF_SPEED_UP_ACTION): ActionSelector(),
             marker(CONF_SPEED_DOWN_ACTION): ActionSelector(),
-            marker(CONF_BURST_BUTTON, optional=True): EntitySelector(
-                EntitySelectorConfig(domain="button")
-            ),
+            marker(CONF_FEEDBACK_BURST_ACTION, optional=True): ActionSelector(),
         }
     )
 
@@ -85,13 +83,22 @@ async def _async_validate_actions(
             await async_validate_actions_config(hass, deepcopy(sequence))
         except HomeAssistantError, ValueError, vol.Invalid:
             errors[key] = "invalid_action"
+    if value := user_input.get(CONF_FEEDBACK_BURST_ACTION):
+        sequence = [value] if isinstance(value, dict) else value
+        if not isinstance(sequence, list) or not sequence:
+            errors[CONF_FEEDBACK_BURST_ACTION] = "invalid_action"
+        else:
+            try:
+                await async_validate_actions_config(hass, deepcopy(sequence))
+            except HomeAssistantError, ValueError, vol.Invalid:
+                errors[CONF_FEEDBACK_BURST_ACTION] = "invalid_action"
     return errors
 
 
 class DysonFanConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle Dyson Fan setup and reconfiguration."""
 
-    VERSION = 1
+    VERSION = 2
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -120,7 +127,7 @@ class DysonFanConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Change the power sensor, actions, or optional burst button."""
+        """Change the power sensor and Home Assistant actions."""
         entry = self._get_reconfigure_entry()
         errors: dict[str, str] = {}
         if user_input is not None:
@@ -153,7 +160,31 @@ class DysonFanOptionsFlow(config_entries.OptionsFlowWithReload):
     ) -> ConfigFlowResult:
         """Show an options menu."""
         return self.async_show_menu(
-            step_id="init", menu_options=["control", "power_table"]
+            step_id="init",
+            menu_options=["configuration", "control", "power_table"],
+        )
+
+    async def async_step_configuration(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Change feedback entities and the four infrared actions."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            errors = await _async_validate_actions(self.hass, user_input)
+            if not errors:
+                changed = self.hass.config_entries.async_update_entry(
+                    self.config_entry, data=user_input
+                )
+                if changed:
+                    self.hass.config_entries.async_schedule_reload(
+                        self.config_entry.entry_id
+                    )
+                return self.async_create_entry(data=dict(self.config_entry.options))
+
+        return self.async_show_form(
+            step_id="configuration",
+            data_schema=_configuration_schema(dict(self.config_entry.data)),
+            errors=errors,
         )
 
     async def async_step_control(

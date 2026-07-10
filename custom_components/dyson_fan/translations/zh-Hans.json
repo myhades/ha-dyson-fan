@@ -11,10 +11,10 @@
           "oscillation_toggle_action": "摆风切换动作",
           "speed_up_action": "提高风速动作",
           "speed_down_action": "降低风速动作",
-          "burst_button": "功率反馈 Burst 按钮（可选）"
+          "feedback_burst_action": "功率反馈加速动作（可选）"
         },
         "data_description": {
-          "burst_button": "临时提高功率计上报速度的 ESPHome 按钮。"
+          "feedback_burst_action": "需要更快功率反馈时执行的动作。"
         }
       },
       "reconfigure": {
@@ -25,10 +25,10 @@
           "oscillation_toggle_action": "摆风切换动作",
           "speed_up_action": "提高风速动作",
           "speed_down_action": "降低风速动作",
-          "burst_button": "功率反馈 Burst 按钮（可选）"
+          "feedback_burst_action": "功率反馈加速动作（可选）"
         },
         "data_description": {
-          "burst_button": "临时提高功率计上报速度的 ESPHome 按钮。"
+          "feedback_burst_action": "需要更快功率反馈时执行的动作。"
         }
       }
     },
@@ -43,12 +43,28 @@
     "step": {
       "init": {
         "menu_options": {
+          "configuration": "反馈与动作",
           "control": "控制行为",
-          "power_table": "功率特征表"
+          "power_table": "功率表"
         },
         "menu_option_descriptions": {
+          "configuration": "修改功率传感器、反馈加速动作和红外动作。",
           "control": "修改尝试次数和两次红外发送之间的间隔。",
           "power_table": "修改用于识别各档风速和摆风状态的功率。"
+        }
+      },
+      "configuration": {
+        "title": "反馈与动作",
+        "data": {
+          "power_sensor": "功率传感器",
+          "power_toggle_action": "电源切换动作",
+          "oscillation_toggle_action": "摆风切换动作",
+          "speed_up_action": "提高风速动作",
+          "speed_down_action": "降低风速动作",
+          "feedback_burst_action": "功率反馈加速动作（可选）"
+        },
+        "data_description": {
+          "feedback_burst_action": "需要更快功率反馈时执行的动作。"
         }
       },
       "control": {
@@ -63,7 +79,7 @@
         }
       },
       "power_table": {
-        "title": "功率特征表",
+        "title": "功率表",
         "description": "输入每种风扇物理状态下的典型实测功率。",
         "data": {
           "power_off": "关机",
@@ -91,13 +107,14 @@
       }
     },
     "error": {
+      "invalid_action": "请至少选择一个有效的 Home Assistant 动作。",
       "invalid_power_table": "功率必须随档位升高而增加，并且每档的摆风功率必须高于不摆风功率。"
     }
   },
   "entity": {
     "button": {
       "calibrate_power_table": {
-        "name": "校准功率特征表"
+        "name": "校准功率表"
       }
     },
     "sensor": {
@@ -106,9 +123,9 @@
         "state": {
           "initializing": "初始化中",
           "idle": "空闲",
-          "sending": "正在发送红外命令",
-          "waiting_feedback": "正在等待反馈",
-          "calibrating": "正在校准",
+          "sending": "发送中",
+          "waiting_feedback": "等待反馈",
+          "calibrating": "校准中",
           "error": "错误"
         }
       }

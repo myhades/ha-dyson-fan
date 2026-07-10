@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from itertools import pairwise
 from unittest.mock import AsyncMock
 
 import pytest
@@ -9,6 +10,7 @@ from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.dyson_fan.calibration import (
+    CALIBRATION_REFERENCE_TABLE,
     CalibrationCancelled,
     CalibrationError,
     build_calibrated_table,
@@ -25,7 +27,6 @@ from custom_components.dyson_fan.const import (
 )
 from custom_components.dyson_fan.controller import DysonFanController
 from custom_components.dyson_fan.models import Command, FanState, TargetState
-from custom_components.dyson_fan.power import PowerSignatureTable
 
 
 def _entry() -> MockConfigEntry:
@@ -48,10 +49,9 @@ def _entry() -> MockConfigEntry:
 
 def test_calibration_identity_keeps_existing_table() -> None:
     """Matching endpoint measurements preserve every signature."""
-    table = PowerSignatureTable.from_options({})
+    table = CALIBRATION_REFERENCE_TABLE
 
     result = build_calibrated_table(
-        table,
         table.off,
         table.speeds[(1, False)],
         table.speeds[(10, False)],
@@ -63,11 +63,11 @@ def test_calibration_identity_keeps_existing_table() -> None:
     assert result.offset == pytest.approx(0)
 
 
-def test_calibration_affinely_updates_stationary_and_oscillating_states() -> None:
-    """Both signature families use the same validated endpoint transform."""
-    table = PowerSignatureTable.from_options({})
+def test_calibration_preserves_non_linear_reference_curve() -> None:
+    """Endpoint projection retains the factory curve instead of linear speed steps."""
+    table = CALIBRATION_REFERENCE_TABLE
 
-    result = build_calibrated_table(table, 1.5, 5.4, 57.54)
+    result = build_calibrated_table(1.5, 5.4, 57.54)
 
     assert result.table.off == 1.5
     assert result.table.speeds[(1, False)] == pytest.approx(5.4)
@@ -75,6 +75,9 @@ def test_calibration_affinely_updates_stationary_and_oscillating_states() -> Non
     assert result.table.speeds[(5, True)] == pytest.approx(
         result.scale * table.speeds[(5, True)] + result.offset
     )
+    stationary = [result.table.speeds[(speed, False)] for speed in range(1, 11)]
+    increments = [right - left for left, right in pairwise(stationary)]
+    assert len({round(value, 3) for value in increments}) > 1
 
 
 @pytest.mark.parametrize(
@@ -93,7 +96,6 @@ def test_calibration_rejects_unsafe_endpoints(
     """Unreasonable measurements never produce a replacement table."""
     with pytest.raises(CalibrationError):
         build_calibrated_table(
-            PowerSignatureTable.from_options({}),
             off_watts,
             speed_1_watts,
             speed_10_watts,
@@ -155,6 +157,50 @@ async def test_calibration_uses_at_least_one_second_ir_interval(
     sleep.assert_awaited_once_with(pytest.approx(0.25))
 
 
+async def test_calibration_power_cycles_without_oscillation_command(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A full off wait is the only mechanism used to stop oscillation."""
+    from custom_components.dyson_fan import controller as controller_module
+
+    entry = _entry()
+    controller = DysonFanController(hass, entry, entry.data)
+    controller.target_revision = 1
+    controller.supposed = FanState(True, 5, True)
+    controller._async_calibration_send = AsyncMock()  # type: ignore[method-assign]
+    controller._async_measure_stable_power = AsyncMock(  # type: ignore[method-assign]
+        # 21.1 W maps to an oscillating state in the old table. Calibration must
+        # ignore that classification because the hardware power cycle is definitive.
+        side_effect=[1.2, 21.1]
+    )
+    controller._async_find_endpoint = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[4.8, 52.2]
+    )
+    sleep = AsyncMock()
+    monkeypatch.setattr(controller_module.asyncio, "sleep", sleep)
+
+    await controller._async_perform_calibration(1)
+
+    assert [
+        call.args[0] for call in controller._async_calibration_send.await_args_list
+    ] == [Command.POWER_TOGGLE, Command.POWER_TOGGLE]
+    sleep.assert_awaited_once_with(3.0)
+
+
+async def test_calibration_rejects_oscillation_command(hass: HomeAssistant) -> None:
+    """Future calibration changes cannot accidentally transmit the unsafe toggle."""
+    entry = _entry()
+    controller = DysonFanController(hass, entry, entry.data)
+    controller.target_revision = 1
+    controller._async_send_command = AsyncMock(  # type: ignore[method-assign]
+        return_value=True
+    )
+
+    with pytest.raises(CalibrationError, match="must not transmit"):
+        await controller._async_calibration_send(Command.OSCILLATION_TOGGLE, 1)
+    controller._async_send_command.assert_not_awaited()
+
+
 async def test_user_cancel_keeps_command_already_transmitted(
     hass: HomeAssistant,
 ) -> None:
@@ -209,8 +255,7 @@ async def test_successful_calibration_commits_whole_table_once(
     entry = _entry()
     entry.add_to_hass(hass)
     controller = DysonFanController(hass, entry, entry.data)
-    old_table = controller.decoder.table
-    result = build_calibrated_table(old_table, 1.5, 5.4, 57.54)
+    result = build_calibrated_table(1.5, 5.4, 57.54)
     controller.calibrating = True
     controller._calibration_requested = True
     controller.target_revision = 1

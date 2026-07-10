@@ -6,11 +6,14 @@ import asyncio
 from unittest.mock import AsyncMock
 
 from homeassistant.components.sensor import SensorDeviceClass
+from homeassistant.const import EntityCategory
 from homeassistant.core import Context, HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.dyson_fan import DysonFanRuntimeData
+from custom_components.dyson_fan.button import DysonFanCalibrationButton
 from custom_components.dyson_fan.const import (
+    CONF_FEEDBACK_BURST_ACTION,
     CONF_IR_SEND_INTERVAL,
     CONF_MAX_ATTEMPTS,
     CONF_OSCILLATION_TOGGLE_ACTION,
@@ -50,10 +53,30 @@ async def test_diagnostics_attributes_omit_power_table(hass: HomeAssistant) -> N
     controller = DysonFanController(hass, entry, entry.data)
     entry.runtime_data = DysonFanRuntimeData(controller)
     sensor = DysonFanDiagnosticsSensor(entry)
+    calibration_button = DysonFanCalibrationButton(entry)
 
     assert sensor.device_class is SensorDeviceClass.ENUM
     assert sensor.options == [phase.value for phase in ControllerPhase]
+    assert calibration_button.entity_category is EntityCategory.DIAGNOSTIC
     assert "power_signatures" not in controller.diagnostics()
+
+
+async def test_feedback_burst_runs_generic_action(hass: HomeAssistant) -> None:
+    """Feedback acceleration accepts an arbitrary Home Assistant action."""
+    entry = _entry()
+    data = dict(entry.data)
+    data[CONF_FEEDBACK_BURST_ACTION] = [{"event": "dyson_feedback_burst"}]
+    entry.add_to_hass(hass)
+    controller = DysonFanController(hass, entry, data)
+    events: list[object] = []
+    hass.bus.async_listen("dyson_feedback_burst", events.append)
+
+    await controller.async_start()
+    await controller._async_run_feedback_burst()
+
+    assert len(events) == 1
+    assert controller.feedback_burst_configured
+    await controller.async_shutdown()
 
 
 async def test_oscillation_precedes_multi_step_speed_change(
@@ -65,7 +88,7 @@ async def test_oscillation_precedes_multi_step_speed_change(
     controller.target_revision = 1
     controller.target = TargetState(True, 5, True)
     controller.supposed = FanState(True, 1, False)
-    controller._async_press_burst = AsyncMock()  # type: ignore[method-assign]
+    controller._async_run_feedback_burst = AsyncMock()  # type: ignore[method-assign]
 
     sent: list[Command] = []
 
@@ -85,14 +108,16 @@ async def test_oscillation_precedes_multi_step_speed_change(
     ]
 
 
-async def test_power_off_normalizes_oscillation_first(hass: HomeAssistant) -> None:
-    """Oscillation is stopped before power off and remembered speed is retained."""
+async def test_power_off_stops_oscillation_before_toggle(
+    hass: HomeAssistant,
+) -> None:
+    """Normal shutdown stops oscillation before power and retains the speed."""
     entry = _entry()
     controller = DysonFanController(hass, entry, entry.data)
     controller.target_revision = 1
     controller.target = TargetState(False, 7, False)
     controller.supposed = FanState(True, 7, True)
-    controller._async_press_burst = AsyncMock()  # type: ignore[method-assign]
+    controller._async_run_feedback_burst = AsyncMock()  # type: ignore[method-assign]
     controller._remember_speed = lambda speed: None  # type: ignore[method-assign]
 
     sent: list[Command] = []
@@ -115,7 +140,7 @@ async def test_new_revision_stops_old_speed_sequence(hass: HomeAssistant) -> Non
     controller.target_revision = 1
     controller.target = TargetState(True, 10, False)
     controller.supposed = FanState(True, 1, False)
-    controller._async_press_burst = AsyncMock()  # type: ignore[method-assign]
+    controller._async_run_feedback_burst = AsyncMock()  # type: ignore[method-assign]
 
     sent: list[Command] = []
 
@@ -140,7 +165,7 @@ async def test_target_changed_during_action_keeps_transmitted_step(
     controller.target_revision = 1
     controller.target = TargetState(True, 3, False)
     controller.supposed = FanState(True, 1, False)
-    controller._async_press_burst = AsyncMock()  # type: ignore[method-assign]
+    controller._async_run_feedback_burst = AsyncMock()  # type: ignore[method-assign]
 
     action = AsyncMock()
 

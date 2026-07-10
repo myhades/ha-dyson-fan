@@ -51,12 +51,13 @@ from .const import (
     CALIBRATION_MEASUREMENT_SAMPLES,
     CALIBRATION_MEASUREMENT_SETTLE_SECONDS,
     CALIBRATION_MEASUREMENT_TIMEOUT_SECONDS,
+    CALIBRATION_POWER_CYCLE_OFF_SECONDS,
     CALIBRATION_PROBE_COMMANDS,
     CALIBRATION_RESTORE_TIMEOUT_SECONDS,
     CALIBRATION_STABILITY_FLOOR_WATTS,
     CALIBRATION_STABILITY_RATIO,
     CALIBRATION_UNCHANGED_PROBES,
-    CONF_BURST_BUTTON,
+    CONF_FEEDBACK_BURST_ACTION,
     CONF_IR_SEND_INTERVAL,
     CONF_MAX_ATTEMPTS,
     CONF_OSCILLATION_TOGGLE_ACTION,
@@ -120,13 +121,6 @@ class DysonFanController:
             raise HomeAssistantError("The configured power sensor no longer exists")
         self.power_sensor = power_sensor
 
-        burst_value = entry.data.get(CONF_BURST_BUTTON)
-        self.burst_button = (
-            er.async_resolve_entity_id(registry, str(burst_value))
-            if burst_value
-            else None
-        )
-
         self.max_attempts = int(
             entry.options.get(CONF_MAX_ATTEMPTS, DEFAULT_MAX_ATTEMPTS)
         )
@@ -137,6 +131,7 @@ class DysonFanController:
         self.tracker = StablePowerTracker(STABLE_REPORTS_REQUIRED)
         self._action_configs = action_configs
         self._actions: dict[Command, Script] = {}
+        self._feedback_burst_action: Script | None = None
 
         self._store: Store[dict[str, Any]] = Store(
             hass, STORAGE_VERSION, f"{STORAGE_KEY_PREFIX}.{entry.entry_id}"
@@ -214,6 +209,19 @@ class DysonFanController:
                 log_exceptions=True,
             )
 
+        if burst_config := self._action_configs.get(CONF_FEEDBACK_BURST_ACTION):
+            raw_sequence = _normalize_action_sequence(burst_config)
+            validated = await async_validate_actions_config(
+                self.hass, deepcopy(raw_sequence)
+            )
+            self._feedback_burst_action = Script(
+                self.hass,
+                validated,
+                f"{self.entry.title} feedback burst",
+                DOMAIN,
+                log_exceptions=True,
+            )
+
         self._unsubscribers.extend(
             (
                 async_track_state_change_event(
@@ -248,6 +256,9 @@ class DysonFanController:
         for action in self._actions.values():
             await action.async_unload()
         self._actions.clear()
+        if self._feedback_burst_action is not None:
+            await self._feedback_burst_action.async_unload()
+            self._feedback_burst_action = None
         await self._store.async_save({"last_speed": self.last_speed})
 
     @callback
@@ -260,6 +271,11 @@ class DysonFanController:
             self._listeners.discard(listener)
 
         return remove_listener
+
+    @property
+    def feedback_burst_configured(self) -> bool:
+        """Return whether an optional feedback acceleration action is ready."""
+        return self._feedback_burst_action is not None
 
     @callback
     def async_request_turn_on(
@@ -486,10 +502,12 @@ class DysonFanController:
         self._samples_enabled = False
         self.tracker.reset()
         self.stable_report_count = 0
-        await self._async_press_burst()
+        await self._async_run_feedback_burst()
         self._notify_listeners()
 
         if not target.power:
+            # Normal shutdown may be followed by an immediate power-on before a
+            # hardware reset. Calibration instead powers off directly and waits.
             if supposed.power and supposed.oscillating:
                 if not await self._async_send_command(
                     Command.OSCILLATION_TOGGLE, revision
@@ -657,11 +675,13 @@ class DysonFanController:
 
         self.calibration_step = "normalizing_off"
         self._notify_listeners()
-        if supposed.power and supposed.oscillating:
-            await self._async_calibration_send(Command.OSCILLATION_TOGGLE, revision)
-            supposed = self.supposed
-        if supposed is not None and supposed.power:
+        if supposed.power:
             await self._async_calibration_send(Command.POWER_TOGGLE, revision)
+
+        self.calibration_step = "waiting_power_cycle_reset"
+        self._notify_listeners()
+        await asyncio.sleep(CALIBRATION_POWER_CYCLE_OFF_SECONDS)
+        self._check_calibration_revision(revision)
 
         off_watts = await self._async_measure_stable_power("off", revision)
         off_boundary = (
@@ -676,23 +696,12 @@ class DysonFanController:
         power_on_watts = await self._async_measure_stable_power("power_on", revision)
         if power_on_watts - off_watts < 0.5:
             raise CalibrationError("The fan did not turn on after the power command")
-        power_on_state = self.decoder.decode(power_on_watts).state
-        if not power_on_state.power:
-            raise CalibrationError("Power feedback still identifies the fan as off")
-        if power_on_state.oscillating:
-            self.calibration_step = "stopping_oscillation"
-            self._notify_listeners()
-            await self._async_calibration_send(Command.OSCILLATION_TOGGLE, revision)
-            self.supposed = FanState(True, power_on_state.speed, False)
-            stationary_watts = await self._async_measure_stable_power(
-                "power_on_stationary", revision
-            )
-            stationary_state = self.decoder.decode(stationary_watts).state
-            if not stationary_state.power or stationary_state.oscillating:
-                raise CalibrationError("Could not confirm that oscillation is off")
-            self.supposed = FanState(True, stationary_state.speed, False)
-        else:
-            self.supposed = FanState(True, power_on_state.speed, False)
+        supposed = self.supposed
+        self.supposed = FanState(
+            True,
+            supposed.speed if supposed is not None else None,
+            False,
+        )
 
         speed_1_watts = await self._async_find_endpoint(
             Command.SPEED_DOWN, "speed_1", revision
@@ -703,7 +712,6 @@ class DysonFanController:
         )
         self.supposed = FanState(True, 10, False)
         return build_calibrated_table(
-            self.decoder.table,
             off_watts,
             speed_1_watts,
             speed_10_watts,
@@ -754,6 +762,10 @@ class DysonFanController:
 
     async def _async_calibration_send(self, command: Command, revision: int) -> None:
         """Send one calibration command and retain every transmitted state step."""
+        if command is Command.OSCILLATION_TOGGLE:
+            raise CalibrationError(
+                "Calibration must not transmit the oscillation command"
+            )
         self._check_calibration_revision(revision)
         if self._last_ir_sent_monotonic is not None:
             calibration_interval = max(
@@ -776,8 +788,6 @@ class DysonFanController:
                     supposed.speed,
                     False if supposed.power else supposed.oscillating,
                 )
-            elif command is Command.OSCILLATION_TOGGLE and supposed.power:
-                supposed = FanState(True, supposed.speed, not supposed.oscillating)
             elif command in (Command.SPEED_UP, Command.SPEED_DOWN) and supposed.power:
                 delta = 1 if command is Command.SPEED_UP else -1
                 speed = (
@@ -795,7 +805,7 @@ class DysonFanController:
         """Measure a stable median from fresh raw sensor reports."""
         self.calibration_step = f"measuring_{label}"
         self.phase = STATE_CALIBRATING
-        await self._async_press_burst()
+        await self._async_run_feedback_burst()
         self._notify_listeners()
         await asyncio.sleep(CALIBRATION_MEASUREMENT_SETTLE_SECONDS)
         self._check_calibration_revision(revision)
@@ -899,7 +909,7 @@ class DysonFanController:
         self._samples_enabled = False
         self.tracker.reset()
         self.stable_report_count = 0
-        await self._async_press_burst()
+        await self._async_run_feedback_burst()
         self._notify_listeners()
 
         await asyncio.sleep(POST_COMMAND_SETTLE_SECONDS)
@@ -930,19 +940,13 @@ class DysonFanController:
             self._samples_enabled = True
         return None
 
-    async def _async_press_burst(self) -> None:
-        """Ask an optional ESPHome button to temporarily accelerate sampling."""
-        if not self.burst_button:
+    async def _async_run_feedback_burst(self) -> None:
+        """Run an optional action that temporarily accelerates feedback."""
+        if self._feedback_burst_action is None:
             return
         try:
-            await self.hass.services.async_call(
-                "button",
-                "press",
-                {"entity_id": self.burst_button},
-                blocking=True,
-                context=self._context,
-            )
-        except (HomeAssistantError, ValueError) as err:
+            await self._feedback_burst_action.async_run(context=self._context)
+        except (HomeAssistantError, RuntimeError, ValueError) as err:
             # Burst is an optimization; losing it must never block normal feedback.
             _LOGGER.debug("Unable to request power feedback burst: %s", err)
 
@@ -1111,7 +1115,7 @@ class DysonFanController:
             "last_operation": _as_iso(self.last_operation),
             "last_confirmation": _as_iso(self.last_confirmation),
             "power_sensor": self.power_sensor,
-            "burst_button": self.burst_button,
+            "feedback_burst_configured": self.feedback_burst_configured,
             "ir_send_interval": self.ir_send_interval,
         }
 
