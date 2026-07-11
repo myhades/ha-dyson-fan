@@ -161,30 +161,7 @@ class DysonFanOptionsFlow(config_entries.OptionsFlowWithReload):
         """Show an options menu."""
         return self.async_show_menu(
             step_id="init",
-            menu_options=["configuration", "control", "power_table"],
-        )
-
-    async def async_step_configuration(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Change feedback entities and the four infrared actions."""
-        errors: dict[str, str] = {}
-        if user_input is not None:
-            errors = await _async_validate_actions(self.hass, user_input)
-            if not errors:
-                changed = self.hass.config_entries.async_update_entry(
-                    self.config_entry, data=user_input
-                )
-                if changed:
-                    self.hass.config_entries.async_schedule_reload(
-                        self.config_entry.entry_id
-                    )
-                return self.async_create_entry(data=dict(self.config_entry.options))
-
-        return self.async_show_form(
-            step_id="configuration",
-            data_schema=_configuration_schema(dict(self.config_entry.data)),
-            errors=errors,
+            menu_options=["control", "power_table"],
         )
 
     async def async_step_control(

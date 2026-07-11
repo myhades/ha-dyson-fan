@@ -19,9 +19,6 @@ CONF_SPEED_UP_ACTION: Final = "speed_up_action"
 CONF_SPEED_DOWN_ACTION: Final = "speed_down_action"
 CONF_FEEDBACK_BURST_ACTION: Final = "feedback_burst_action"
 
-# Version 1 compatibility; migrated to CONF_FEEDBACK_BURST_ACTION on load.
-CONF_LEGACY_BURST_BUTTON: Final = "burst_button"
-
 ACTION_KEYS: Final = (
     CONF_POWER_TOGGLE_ACTION,
     CONF_OSCILLATION_TOGGLE_ACTION,

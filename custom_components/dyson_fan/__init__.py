@@ -9,13 +9,11 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryError, HomeAssistantError
-from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
 
 from .const import (
     ACTION_KEYS,
     CONF_FEEDBACK_BURST_ACTION,
-    CONF_LEGACY_BURST_BUTTON,
     PLATFORMS,
     STORAGE_KEY_PREFIX,
     STORAGE_VERSION,
@@ -52,26 +50,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: DysonFanConfigEntry) -> 
     except Exception:
         await controller.async_shutdown()
         raise
-    return True
-
-
-async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry[Any]) -> bool:
-    """Migrate the version 1 button field to a generic HA action."""
-    if entry.version > 2:
-        return False
-    if entry.version == 1:
-        data = dict(entry.data)
-        legacy_button = data.pop(CONF_LEGACY_BURST_BUTTON, None)
-        if legacy_button:
-            registry = er.async_get(hass)
-            entity_id = er.async_resolve_entity_id(registry, str(legacy_button))
-            data[CONF_FEEDBACK_BURST_ACTION] = [
-                {
-                    "action": "button.press",
-                    "target": {"entity_id": entity_id or str(legacy_button)},
-                }
-            ]
-        hass.config_entries.async_update_entry(entry, data=data, version=2)
     return True
 
 

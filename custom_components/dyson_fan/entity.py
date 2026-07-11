@@ -22,7 +22,7 @@ class DysonFanEntity:
             identifiers={(DOMAIN, entry.entry_id)},
             name=entry.title,
             manufacturer="Dyson",
-            model="Infrared fan with power feedback",
+            model="Infrared fan",
         )
 
     async def async_added_to_hass(self) -> None:

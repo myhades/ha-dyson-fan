@@ -77,12 +77,13 @@ needed.
 After setup, wait for several power reports. The fan becomes available once a
 stable physical state has been recognized.
 
+To change the power sensor or any configured action, open Dyson Fan on the
+integrations page and choose **Reconfigure** from its menu.
+
 ## Options
 
 The integration's options page provides:
 
-- **Feedback and actions** — changes the power sensor, optional feedback burst
-  action, and four infrared actions.
 - **Maximum attempts** — defaults to one complete command attempt.
 - **Infrared send interval** — defaults to 0.35 seconds.
 - **Power signature table** — the expected wattage for all 21 observable
