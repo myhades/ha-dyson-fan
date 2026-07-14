@@ -586,10 +586,9 @@ class DysonFanController:
         try:
             await self._actions[command].async_run(context=self._context)
         except (HomeAssistantError, RuntimeError, ValueError) as err:
-            # Script action failures are also detected by missing/mismatched feedback.
-            # Keep the exception in diagnostics when it propagates from HA.
             self.last_error = f"action_error: {err}"
             _LOGGER.warning("%s action failed: %s", command.value, err)
+            return False
         finally:
             self._last_ir_sent_monotonic = monotonic()
         # The action may have transmitted before a newer target arrived. Report that

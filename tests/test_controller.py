@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.const import EntityCategory
 from homeassistant.core import Context, HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.dyson_fan import DysonFanRuntimeData
@@ -77,6 +78,26 @@ async def test_feedback_burst_runs_generic_action(hass: HomeAssistant) -> None:
     assert len(events) == 1
     assert controller.feedback_burst_configured
     await controller.async_shutdown()
+
+
+async def test_failed_action_does_not_advance_predicted_state(
+    hass: HomeAssistant,
+) -> None:
+    """A known action failure remains unsent so feedback recovery can retry it."""
+    entry = _entry()
+    controller = DysonFanController(hass, entry, entry.data)
+    controller.target_revision = 1
+    controller.target = TargetState(True, 2, False)
+    controller.supposed = FanState(True, 1, False)
+    controller._async_run_feedback_burst = AsyncMock()  # type: ignore[method-assign]
+    controller._actions[Command.SPEED_UP] = AsyncMock()
+    controller._actions[Command.SPEED_UP].async_run.side_effect = HomeAssistantError(
+        "transmitter unavailable"
+    )
+
+    assert not await controller._async_execute_target(1)
+    assert controller.supposed == FanState(True, 1, False)
+    assert controller.last_error == "action_error: transmitter unavailable"
 
 
 async def test_oscillation_precedes_multi_step_speed_change(

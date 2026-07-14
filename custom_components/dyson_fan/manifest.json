@@ -7,5 +7,5 @@
   "integration_type": "device",
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/myhades/ha-dyson-fan/issues",
-  "version": "0.4.0"
+  "version": "0.5.0"
 }

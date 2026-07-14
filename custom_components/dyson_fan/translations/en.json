@@ -44,7 +44,7 @@
       "init": {
         "menu_options": {
           "control": "Control behavior",
-          "power_table": "Power signature table"
+          "power_table": "Power table"
         },
         "menu_option_descriptions": {
           "control": "Change retry behavior and the interval between infrared transmissions.",
@@ -106,7 +106,7 @@
         "state": {
           "initializing": "Initializing",
           "idle": "Idle",
-          "sending": "Sending infrared commands",
+          "sending": "Sending commands",
           "waiting_feedback": "Waiting for feedback",
           "calibrating": "Calibrating",
           "error": "Error"
