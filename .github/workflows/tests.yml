@@ -1,0 +1,38 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  pytest:
+    name: Pytest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install uv
+          uv pip install --system homeassistant==2026.7.1 pytest pytest-homeassistant-custom-component ruff
+
+      - name: Run Ruff lint
+        run: ruff check custom_components tests
+
+      - name: Check Ruff formatting
+        run: ruff format --check custom_components tests
+
+      - name: Run tests
+        run: pytest -q
