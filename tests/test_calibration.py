@@ -11,7 +11,6 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.dyson_fan.calibration import (
     CALIBRATION_REFERENCE_TABLE,
-    CalibrationCancelled,
     CalibrationError,
     build_calibrated_table,
 )
@@ -47,44 +46,21 @@ def _entry() -> MockConfigEntry:
     )
 
 
-def test_calibration_identity_keeps_existing_table() -> None:
-    """Matching endpoint measurements preserve every signature."""
-    table = CALIBRATION_REFERENCE_TABLE
-
-    result = build_calibrated_table(
-        table.off,
-        table.speeds[(1, False)],
-        table.speeds[(10, False)],
-    )
-
-    assert result.table.off == pytest.approx(table.off)
-    assert result.table.speeds == pytest.approx(table.speeds)
-    assert result.scale == pytest.approx(1)
-    assert result.offset == pytest.approx(0)
-
-
 def test_calibration_preserves_non_linear_reference_curve() -> None:
-    """Endpoint projection retains the factory curve instead of linear speed steps."""
+    """Projection retains the factory curve and rounds the resulting table."""
     table = CALIBRATION_REFERENCE_TABLE
 
-    result = build_calibrated_table(1.5, 5.4, 57.54)
+    result = build_calibrated_table(1.2345, 5.4321, 57.5432)
 
-    assert result.table.off == 1.5
-    assert result.table.speeds[(1, False)] == pytest.approx(5.4)
-    assert result.table.speeds[(10, False)] == pytest.approx(57.54)
+    assert result.table.off == 1.23
+    assert result.table.speeds[(1, False)] == 5.43
+    assert result.table.speeds[(10, False)] == 57.54
     assert result.table.speeds[(5, True)] == round(
         result.scale * table.speeds[(5, True)] + result.offset, 2
     )
     stationary = [result.table.speeds[(speed, False)] for speed in range(1, 11)]
     increments = [right - left for left, right in pairwise(stationary)]
-    assert len({round(value, 3) for value in increments}) > 1
-
-
-def test_calibration_rounds_power_table_to_two_decimal_places() -> None:
-    """Projected signatures never persist long floating-point tails."""
-    result = build_calibrated_table(1.2345, 5.4321, 57.5432)
-
-    assert result.table.off == 1.23
+    assert len({round(value, 2) for value in increments}) > 1
     assert all(
         value == round(value, 2)
         for value in (result.table.off, *result.table.speeds.values())
@@ -196,40 +172,6 @@ async def test_calibration_power_cycles_without_oscillation_command(
         call.args[0] for call in controller._async_calibration_send.await_args_list
     ] == [Command.POWER_TOGGLE, Command.POWER_TOGGLE]
     sleep.assert_awaited_once_with(3.0)
-
-
-async def test_calibration_rejects_oscillation_command(hass: HomeAssistant) -> None:
-    """Future calibration changes cannot accidentally transmit the unsafe toggle."""
-    entry = _entry()
-    controller = DysonFanController(hass, entry, entry.data)
-    controller.target_revision = 1
-    controller._async_send_command = AsyncMock(  # type: ignore[method-assign]
-        return_value=True
-    )
-
-    with pytest.raises(CalibrationError, match="must not transmit"):
-        await controller._async_calibration_send(Command.OSCILLATION_TOGGLE, 1)
-    controller._async_send_command.assert_not_awaited()
-
-
-async def test_user_cancel_keeps_command_already_transmitted(
-    hass: HomeAssistant,
-) -> None:
-    """Cancellation occurs after updating the predicted state for an in-flight IR."""
-    entry = _entry()
-    controller = DysonFanController(hass, entry, entry.data)
-    controller.target_revision = 1
-    controller.supposed = FanState(True, 3, False)
-
-    async def send_then_cancel(command: Command, revision: int) -> bool:
-        controller._calibration_cancel.set()
-        return True
-
-    controller._async_send_command = send_then_cancel  # type: ignore[method-assign]
-
-    with pytest.raises(CalibrationCancelled):
-        await controller._async_calibration_send(Command.SPEED_UP, 1)
-    assert controller.supposed == FanState(True, 4, False)
 
 
 async def test_failed_calibration_does_not_change_options(

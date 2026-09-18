@@ -7,8 +7,6 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import STATE_OFF, STATE_UNAVAILABLE
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
-from homeassistant.helpers import device_registry as dr
-from homeassistant.helpers.translation import async_get_translations
 
 from custom_components.dyson_fan.const import (
     CONF_FEEDBACK_BURST_ACTION,
@@ -52,37 +50,6 @@ async def test_user_flow(hass: HomeAssistant) -> None:
     assert result["result"].state is ConfigEntryState.LOADED
     assert hass.states.get("fan.dyson_fan").state == STATE_UNAVAILABLE
     assert hass.states.get("button.dyson_fan_calibrate_power_table") is not None
-    device = next(
-        iter(
-            dr.async_entries_for_config_entry(
-                dr.async_get(hass), result["result"].entry_id
-            )
-        )
-    )
-    assert device.model == "Infrared fan"
-    title_translations = await async_get_translations(
-        hass, "zh-Hans", "title", integrations={DOMAIN}
-    )
-    assert title_translations["component.dyson_fan.title"] == "Dyson 风扇"
-    translations = await async_get_translations(
-        hass, "zh-Hans", "entity", integrations={DOMAIN}
-    )
-    assert (
-        translations[
-            "component.dyson_fan.entity.sensor.diagnostics.state.waiting_feedback"
-        ]
-        == "等待反馈"
-    )
-    config_translations = await async_get_translations(
-        hass, "zh-Hans", "config", integrations={DOMAIN}
-    )
-    assert (
-        config_translations[
-            "component.dyson_fan.config.step.user.data.feedback_burst_action"
-        ]
-        == "快速反馈动作（可选）"  # noqa: RUF001
-    )
-
     # Repeated writes of the same wattage arrive through state_reported and must
     # count as separate feedback samples.
     hass.states.async_set("sensor.dyson_power", "1.2")

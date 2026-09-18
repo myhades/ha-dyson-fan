@@ -20,11 +20,10 @@ def decoder() -> PowerDecoder:
     return PowerDecoder(PowerSignatureTable.from_options({}))
 
 
-@pytest.mark.parametrize(("speed", "oscillating"), DEFAULT_POWER_SIGNATURES.keys())
-def test_exact_signatures(decoder: PowerDecoder, speed: int, oscillating: bool) -> None:
+def test_exact_signatures(decoder: PowerDecoder) -> None:
     """Every built-in signature maps back to its physical state."""
-    watts = DEFAULT_POWER_SIGNATURES[(speed, oscillating)]
-    assert decoder.decode(watts).state == FanState(True, speed, oscillating)
+    for (speed, oscillating), watts in DEFAULT_POWER_SIGNATURES.items():
+        assert decoder.decode(watts).state == FanState(True, speed, oscillating)
 
 
 def test_off_and_negative_meter_direction(decoder: PowerDecoder) -> None:

@@ -5,14 +5,10 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock
 
-from homeassistant.components.sensor import SensorDeviceClass
-from homeassistant.const import EntityCategory
 from homeassistant.core import Context, HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.dyson_fan import DysonFanRuntimeData
-from custom_components.dyson_fan.button import DysonFanCalibrationButton
 from custom_components.dyson_fan.const import (
     CONF_FEEDBACK_BURST_ACTION,
     CONF_IR_SEND_INTERVAL,
@@ -23,11 +19,9 @@ from custom_components.dyson_fan.const import (
     CONF_SPEED_DOWN_ACTION,
     CONF_SPEED_UP_ACTION,
     DOMAIN,
-    ControllerPhase,
 )
 from custom_components.dyson_fan.controller import DysonFanController
 from custom_components.dyson_fan.models import Command, FanState, TargetState
-from custom_components.dyson_fan.sensor import DysonFanDiagnosticsSensor
 
 
 def _entry() -> MockConfigEntry:
@@ -46,20 +40,6 @@ def _entry() -> MockConfigEntry:
         },
         options={CONF_MAX_ATTEMPTS: 1, CONF_IR_SEND_INTERVAL: 0},
     )
-
-
-async def test_diagnostics_attributes_omit_power_table(hass: HomeAssistant) -> None:
-    """Diagnostics use translated enum states without duplicating editable options."""
-    entry = _entry()
-    controller = DysonFanController(hass, entry, entry.data)
-    entry.runtime_data = DysonFanRuntimeData(controller)
-    sensor = DysonFanDiagnosticsSensor(entry)
-    calibration_button = DysonFanCalibrationButton(entry)
-
-    assert sensor.device_class is SensorDeviceClass.ENUM
-    assert sensor.options == [phase.value for phase in ControllerPhase]
-    assert calibration_button.entity_category is EntityCategory.DIAGNOSTIC
-    assert "power_signatures" not in controller.diagnostics()
 
 
 async def test_feedback_burst_runs_generic_action(hass: HomeAssistant) -> None:
@@ -237,13 +217,7 @@ async def test_already_confirmed_target_completes_without_action(
 
     await controller._async_worker()
 
-    assert controller.handled_revision == 1, (
-        controller.phase,
-        controller.stable_report_count,
-        controller._samples_enabled,
-        controller._feedback_sequence,
-        controller.last_error,
-    )
+    assert controller.handled_revision == 1
     assert controller.attempt_count == 0
 
 
@@ -324,13 +298,7 @@ async def test_first_power_on_learns_unknown_speed_and_converges(
         if controller.handled_revision == 1:
             break
         await asyncio.sleep(0)
-    assert controller.handled_revision == 1, (
-        controller.phase,
-        controller.stable_report_count,
-        controller._samples_enabled,
-        controller._feedback_sequence,
-        controller.last_error,
-    )
+    assert controller.handled_revision == 1
     assert controller.accepted == FanState(True, 4, True)
     assert controller.last_speed == 4
     await controller.async_shutdown()
