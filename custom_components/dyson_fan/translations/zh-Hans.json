@@ -11,7 +11,7 @@
           "oscillation_toggle_action": "摆风切换动作",
           "speed_up_action": "提高风速动作",
           "speed_down_action": "降低风速动作",
-          "feedback_burst_action": "临时提高上报速度动作（可选）"
+          "feedback_burst_action": "快速反馈动作（可选）"
         },
         "data_description": {
           "feedback_burst_action": "请求新的功率读数前执行，可使用任意 Home Assistant 动作。"
@@ -25,7 +25,7 @@
           "oscillation_toggle_action": "摆风切换动作",
           "speed_up_action": "提高风速动作",
           "speed_down_action": "降低风速动作",
-          "feedback_burst_action": "临时提高上报速度动作（可选）"
+          "feedback_burst_action": "快速反馈动作（可选）"
         },
         "data_description": {
           "feedback_burst_action": "请求新的功率读数前执行，可使用任意 Home Assistant 动作。"

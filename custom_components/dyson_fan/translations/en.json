@@ -11,7 +11,7 @@
           "oscillation_toggle_action": "Oscillation toggle action",
           "speed_up_action": "Speed up action",
           "speed_down_action": "Speed down action",
-          "feedback_burst_action": "Temporary faster reporting action (optional)"
+          "feedback_burst_action": "Feedback burst action (optional)"
         },
         "data_description": {
           "feedback_burst_action": "Runs before fresh power readings are requested; any Home Assistant action can be used."
@@ -25,7 +25,7 @@
           "oscillation_toggle_action": "Oscillation toggle action",
           "speed_up_action": "Speed up action",
           "speed_down_action": "Speed down action",
-          "feedback_burst_action": "Temporary faster reporting action (optional)"
+          "feedback_burst_action": "Feedback burst action (optional)"
         },
         "data_description": {
           "feedback_burst_action": "Runs before fresh power readings are requested; any Home Assistant action can be used."
@@ -63,7 +63,7 @@
         }
       },
       "power_table": {
-        "title": "Power signature table",
+        "title": "Power table",
         "description": "Enter the typical measured power for every physical fan state.",
         "data": {
           "power_off": "Off",
