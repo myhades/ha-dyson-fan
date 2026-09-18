@@ -72,12 +72,23 @@ def test_calibration_preserves_non_linear_reference_curve() -> None:
     assert result.table.off == 1.5
     assert result.table.speeds[(1, False)] == pytest.approx(5.4)
     assert result.table.speeds[(10, False)] == pytest.approx(57.54)
-    assert result.table.speeds[(5, True)] == pytest.approx(
-        result.scale * table.speeds[(5, True)] + result.offset
+    assert result.table.speeds[(5, True)] == round(
+        result.scale * table.speeds[(5, True)] + result.offset, 2
     )
     stationary = [result.table.speeds[(speed, False)] for speed in range(1, 11)]
     increments = [right - left for left, right in pairwise(stationary)]
     assert len({round(value, 3) for value in increments}) > 1
+
+
+def test_calibration_rounds_power_table_to_two_decimal_places() -> None:
+    """Projected signatures never persist long floating-point tails."""
+    result = build_calibrated_table(1.2345, 5.4321, 57.5432)
+
+    assert result.table.off == 1.23
+    assert all(
+        value == round(value, 2)
+        for value in (result.table.off, *result.table.speeds.values())
+    )
 
 
 @pytest.mark.parametrize(

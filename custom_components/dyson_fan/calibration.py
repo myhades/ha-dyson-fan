@@ -10,7 +10,7 @@ from .const import (
     DEFAULT_POWER_SIGNATURES,
     MAX_SANE_POWER_WATTS,
 )
-from .power import PowerSignatureTable
+from .power import PowerSignatureTable, round_power_watts
 
 MIN_CALIBRATION_SPAN_WATTS = 20.0
 MIN_ENDPOINT_FACTOR = 0.5
@@ -77,15 +77,17 @@ def build_calibrated_table(
     scale = (speed_10_watts - speed_1_watts) / (reference_high - reference_low)
     offset = speed_1_watts - scale * reference_low
     transformed = {
-        state: speed_1_watts
-        + ((watts - reference_low) / (reference_high - reference_low))
-        * (speed_10_watts - speed_1_watts)
+        state: round_power_watts(
+            speed_1_watts
+            + ((watts - reference_low) / (reference_high - reference_low))
+            * (speed_10_watts - speed_1_watts)
+        )
         for state, watts in CALIBRATION_REFERENCE_TABLE.speeds.items()
     }
     if any(not 0 < watts < MAX_SANE_POWER_WATTS for watts in transformed.values()):
         raise CalibrationError("The transformed power table exceeds safe limits")
 
-    table = PowerSignatureTable(off=off_watts, speeds=transformed)
+    table = PowerSignatureTable(off=round_power_watts(off_watts), speeds=transformed)
     return CalibrationResult(
         table=table,
         off_watts=off_watts,

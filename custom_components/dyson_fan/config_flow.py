@@ -217,12 +217,12 @@ class DysonFanOptionsFlow(config_entries.OptionsFlowWithReload):
         errors: dict[str, str] = {}
         if user_input is not None:
             try:
-                _validate_power_table(user_input)
+                table = _validate_power_table(user_input)
             except vol.Invalid:
                 errors["base"] = "invalid_power_table"
             else:
                 options = dict(self.config_entry.options)
-                options.update(user_input)
+                options.update(table.as_options())
                 return self.async_create_entry(data=options)
 
         defaults = PowerSignatureTable.from_options(
@@ -251,15 +251,15 @@ def _power_input() -> NumberSelector:
         NumberSelectorConfig(
             min=0,
             max=100,
-            step=0.1,
+            step=0.01,
             unit_of_measurement="W",
             mode=NumberSelectorMode.BOX,
         )
     )
 
 
-def _validate_power_table(values: dict[str, Any]) -> None:
-    """Reject internally contradictory signature tables."""
+def _validate_power_table(values: dict[str, Any]) -> PowerSignatureTable:
+    """Normalize and validate a signature table at two-decimal precision."""
     table = PowerSignatureTable.from_options(values)
     stationary = [table.speeds[(speed, False)] for speed in range(1, 11)]
     oscillating = [table.speeds[(speed, True)] for speed in range(1, 11)]
@@ -271,3 +271,4 @@ def _validate_power_table(values: dict[str, Any]) -> None:
         raise vol.Invalid("Oscillating signatures must increase with speed")
     if any(on <= off for off, on in zip(stationary, oscillating, strict=True)):
         raise vol.Invalid("Oscillating power must exceed stationary power")
+    return table

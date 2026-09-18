@@ -38,6 +38,7 @@ MAX_IR_SEND_INTERVAL: Final = 3.0
 # treated as a broken/wrong feedback source instead of being decoded to the
 # nearest fan signature.
 MAX_SANE_POWER_WATTS: Final = 100.0
+POWER_TABLE_DECIMAL_PLACES: Final = 2
 
 SPEED_COUNT: Final = 10
 STABLE_REPORTS_REQUIRED: Final = 3

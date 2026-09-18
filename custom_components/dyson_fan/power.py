@@ -15,6 +15,7 @@ from .const import (
     DEFAULT_POWER_OFF,
     DEFAULT_POWER_SIGNATURES,
     MAX_SANE_POWER_WATTS,
+    POWER_TABLE_DECIMAL_PLACES,
     SPEED_COUNT,
     power_signature_key,
 )
@@ -35,9 +36,9 @@ class PowerSignatureTable:
     @classmethod
     def from_options(cls, options: Mapping[str, object]) -> PowerSignatureTable:
         """Build a signature table from config entry options."""
-        off = _finite_float(options.get(CONF_POWER_OFF, DEFAULT_POWER_OFF))
+        off = round_power_watts(options.get(CONF_POWER_OFF, DEFAULT_POWER_OFF))
         speeds = {
-            (speed, oscillating): _finite_float(
+            (speed, oscillating): round_power_watts(
                 options.get(
                     power_signature_key(speed, oscillating),
                     DEFAULT_POWER_SIGNATURES[(speed, oscillating)],
@@ -50,10 +51,10 @@ class PowerSignatureTable:
 
     def as_options(self) -> dict[str, float]:
         """Return the table in config-entry options format."""
-        result = {CONF_POWER_OFF: self.off}
+        result = {CONF_POWER_OFF: round_power_watts(self.off)}
         result.update(
             {
-                power_signature_key(speed, oscillating): watts
+                power_signature_key(speed, oscillating): round_power_watts(watts)
                 for (speed, oscillating), watts in self.speeds.items()
             }
         )
@@ -139,3 +140,8 @@ def _finite_float(value: object) -> float:
     if not math.isfinite(result):
         raise InvalidPowerReading(f"Power reading is not finite: {value!r}")
     return result
+
+
+def round_power_watts(value: object) -> float:
+    """Return a finite wattage rounded to the power-table precision."""
+    return round(_finite_float(value), POWER_TABLE_DECIMAL_PLACES)

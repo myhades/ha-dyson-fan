@@ -13,12 +13,15 @@ from homeassistant.helpers.translation import async_get_translations
 from custom_components.dyson_fan.const import (
     CONF_FEEDBACK_BURST_ACTION,
     CONF_OSCILLATION_TOGGLE_ACTION,
+    CONF_POWER_OFF,
     CONF_POWER_SENSOR,
     CONF_POWER_TOGGLE_ACTION,
     CONF_SPEED_DOWN_ACTION,
     CONF_SPEED_UP_ACTION,
     DOMAIN,
+    power_signature_key,
 )
+from custom_components.dyson_fan.power import PowerSignatureTable
 
 
 def _valid_input() -> dict[str, object]:
@@ -77,7 +80,7 @@ async def test_user_flow(hass: HomeAssistant) -> None:
         config_translations[
             "component.dyson_fan.config.step.user.data.feedback_burst_action"
         ]
-        == "临时提高上报速度动作（可选）"  # noqa: RUF001
+        == "快速反馈动作（可选）"  # noqa: RUF001
     )
 
     # Repeated writes of the same wattage arrive through state_reported and must
@@ -132,6 +135,49 @@ async def test_options_flow(hass: HomeAssistant) -> None:
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert entry.options["max_attempts"] == 2
     assert entry.options["ir_send_interval"] == 0.5
+
+
+async def test_power_table_input_is_rounded_before_validation_and_storage(
+    hass: HomeAssistant,
+) -> None:
+    """Manual power tables use the same two-decimal precision as calibration."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], _valid_input()
+    )
+    entry = result["result"]
+    await hass.async_block_till_done()
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "power_table"}
+    )
+    assert result["type"] is FlowResultType.FORM
+
+    values = PowerSignatureTable.from_options({}).as_options()
+    values = {key: value + 0.004 for key, value in values.items()}
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], values
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert all(entry.options[key] == round(value, 2) for key, value in values.items())
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "power_table"}
+    )
+    values = PowerSignatureTable.from_options(entry.options).as_options()
+    values[CONF_POWER_OFF] = 1.231
+    values[power_signature_key(1, False)] = 1.234
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], values
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "invalid_power_table"}
 
 
 async def test_reconfigure_flow(hass: HomeAssistant) -> None:
