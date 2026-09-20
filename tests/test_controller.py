@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock
 
-from homeassistant.core import Context, HomeAssistant
+import pytest
+from homeassistant.core import Context, HomeAssistant, State
 from homeassistant.exceptions import HomeAssistantError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -58,6 +59,48 @@ async def test_feedback_burst_runs_generic_action(hass: HomeAssistant) -> None:
     assert len(events) == 1
     assert controller.feedback_burst_configured
     await controller.async_shutdown()
+
+
+@pytest.mark.parametrize("interval", [0.25, 10.0])
+async def test_feedback_window_uses_actual_cadence(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, interval: float
+) -> None:
+    """Real feedback accepts three reports and gives a slow source enough time."""
+    from custom_components.dyson_fan import controller as module
+
+    monkeypatch.setattr(module, "POST_COMMAND_SETTLE_SECONDS", 0)
+    entry = _entry()
+    controller = DysonFanController(hass, entry, entry.data)
+    controller.target_revision = 1
+    controller.during_attempt = True
+    controller._async_run_feedback_burst = AsyncMock()
+    deadlines: list[float] = []
+    original_timeout = asyncio.timeout
+
+    class Deadline:
+        async def __aenter__(self):
+            self.actual = original_timeout(1)
+            await self.actual.__aenter__()
+            return self
+
+        def reschedule(self, deadline):
+            deadlines.append(deadline - hass.loop.time())
+
+        async def __aexit__(self, *args):
+            return await self.actual.__aexit__(*args)
+
+    monkeypatch.setattr(module.asyncio, "timeout", lambda _: Deadline())
+    task = asyncio.create_task(controller._async_wait_for_feedback(1))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    for index in range(3):
+        monkeypatch.setattr(module, "monotonic", lambda i=index: i * interval)
+        controller._async_process_power_state(
+            State("sensor.dyson_power", "18.2", {"unit_of_measurement": "W"})
+        )
+        await asyncio.sleep(0)
+    assert await task == FanState(True, 5, False)
+    assert max(deadlines) == pytest.approx(35 if interval == 10 else 15, abs=0.1)
 
 
 async def test_failed_action_does_not_advance_predicted_state(
@@ -188,12 +231,12 @@ async def test_last_feedback_speed_survives_controller_restart(
     """The last observed non-zero speed is stored independently of fan power."""
     entry = _entry()
     entry.add_to_hass(hass)
-    hass.states.async_set("sensor.dyson_power", "18.2")
+    hass.states.async_set("sensor.dyson_power", "18.2", {"unit_of_measurement": "W"})
 
     first = DysonFanController(hass, entry, entry.data)
     await first.async_start()
-    hass.states.async_set("sensor.dyson_power", "18.2")
-    hass.states.async_set("sensor.dyson_power", "18.2")
+    hass.states.async_set("sensor.dyson_power", "18.2", {"unit_of_measurement": "W"})
+    hass.states.async_set("sensor.dyson_power", "18.2", {"unit_of_measurement": "W"})
     assert first.last_speed == 5
     await first.async_shutdown()
 
@@ -250,11 +293,11 @@ async def test_first_power_on_learns_unknown_speed_and_converges(
 
     entry = _entry()
     entry.add_to_hass(hass)
-    hass.states.async_set("sensor.dyson_power", "1.2")
+    hass.states.async_set("sensor.dyson_power", "1.2", {"unit_of_measurement": "W"})
     controller = DysonFanController(hass, entry, entry.data)
     await controller.async_start()
-    hass.states.async_set("sensor.dyson_power", "1.2")
-    hass.states.async_set("sensor.dyson_power", "1.2")
+    hass.states.async_set("sensor.dyson_power", "1.2", {"unit_of_measurement": "W"})
+    hass.states.async_set("sensor.dyson_power", "1.2", {"unit_of_measurement": "W"})
     assert controller.accepted == FanState(False, None, False)
 
     commands: list[str] = []
@@ -279,7 +322,9 @@ async def test_first_power_on_learns_unknown_speed_and_converges(
     # The first three reports teach the previously unknown hardware speed. The
     # next three independently confirm the final state after command planning.
     for _ in range(3):
-        hass.states.async_set("sensor.dyson_power", "16.0")
+        hass.states.async_set(
+            "sensor.dyson_power", "16.0", {"unit_of_measurement": "W"}
+        )
         await asyncio.sleep(0)
     for _ in range(100):
         if (
@@ -291,7 +336,9 @@ async def test_first_power_on_learns_unknown_speed_and_converges(
         await asyncio.sleep(0)
     assert controller.stable_report_count == 0
     for _ in range(3):
-        hass.states.async_set("sensor.dyson_power", "16.0")
+        hass.states.async_set(
+            "sensor.dyson_power", "16.0", {"unit_of_measurement": "W"}
+        )
         await asyncio.sleep(0)
 
     for _ in range(100):

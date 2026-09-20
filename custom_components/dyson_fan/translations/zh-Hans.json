@@ -55,11 +55,13 @@
         "title": "控制行为",
         "data": {
           "max_attempts": "最大尝试次数",
-          "ir_send_interval": "红外发送间隔"
+          "ir_send_interval": "红外发送间隔",
+          "calibration_mode": "校准模式"
         },
         "data_description": {
           "max_attempts": "首次完整发送计为一次尝试。只有稳定反馈与目标不符时才会进行额外尝试。",
-          "ir_send_interval": "连续执行两个红外动作之间的时间。"
+          "ir_send_interval": "连续执行两个红外动作之间的时间。",
+          "calibration_mode": "端点模式根据 1 档和 10 档对当前曲线进行平移和缩放；完整模式会测量每个不摆风档位。"
         }
       },
       "power_table": {
@@ -83,6 +85,14 @@
     },
     "error": {
       "invalid_power_table": "功率必须随档位升高而增加，且加上摆风增量后所有值仍需低于 100 W。"
+    }
+  },
+  "selector": {
+    "calibration_mode": {
+      "options": {
+        "endpoints": "端点",
+        "full": "完整"
+      }
     }
   },
   "entity": {

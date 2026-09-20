@@ -20,10 +20,14 @@ from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
 )
 
 from .const import (
     ACTION_KEYS,
+    CONF_CALIBRATION_MODE,
     CONF_FEEDBACK_BURST_ACTION,
     CONF_IR_SEND_INTERVAL,
     CONF_MAX_ATTEMPTS,
@@ -34,6 +38,7 @@ from .const import (
     CONF_POWER_TOGGLE_ACTION,
     CONF_SPEED_DOWN_ACTION,
     CONF_SPEED_UP_ACTION,
+    DEFAULT_CALIBRATION_MODE,
     DEFAULT_IR_SEND_INTERVAL,
     DEFAULT_MAX_ATTEMPTS,
     DEFAULT_NAME,
@@ -41,6 +46,7 @@ from .const import (
     MAX_IR_SEND_INTERVAL,
     MIN_IR_SEND_INTERVAL,
     SPEED_COUNT,
+    CalibrationMode,
     power_signature_key,
 )
 from .power import (
@@ -119,6 +125,7 @@ class DysonFanConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     options={
                         CONF_MAX_ATTEMPTS: DEFAULT_MAX_ATTEMPTS,
                         CONF_IR_SEND_INTERVAL: DEFAULT_IR_SEND_INTERVAL,
+                        CONF_CALIBRATION_MODE: DEFAULT_CALIBRATION_MODE,
                     },
                 )
 
@@ -208,6 +215,20 @@ class DysonFanOptionsFlow(config_entries.OptionsFlowWithReload):
                         step=0.05,
                         unit_of_measurement="s",
                         mode=NumberSelectorMode.BOX,
+                    )
+                ),
+                vol.Required(
+                    CONF_CALIBRATION_MODE,
+                    default=str(
+                        self.config_entry.options.get(
+                            CONF_CALIBRATION_MODE, DEFAULT_CALIBRATION_MODE
+                        )
+                    ),
+                ): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[mode.value for mode in CalibrationMode],
+                        mode=SelectSelectorMode.DROPDOWN,
+                        translation_key="calibration_mode",
                     )
                 ),
             }

@@ -55,11 +55,13 @@
         "title": "Control behavior",
         "data": {
           "max_attempts": "Maximum attempts",
-          "ir_send_interval": "Infrared send interval"
+          "ir_send_interval": "Infrared send interval",
+          "calibration_mode": "Calibration mode"
         },
         "data_description": {
           "max_attempts": "A complete initial command is one attempt. Additional attempts are only made after stable feedback does not match the target.",
-          "ir_send_interval": "Time between consecutive infrared action executions."
+          "ir_send_interval": "Time between consecutive infrared action executions.",
+          "calibration_mode": "Endpoints shifts and scales the current curve from speeds 1 and 10. Full measures every stationary speed."
         }
       },
       "power_table": {
@@ -83,6 +85,14 @@
     },
     "error": {
       "invalid_power_table": "Power values must increase with speed, and the oscillation increment must keep every value below 100 W."
+    }
+  },
+  "selector": {
+    "calibration_mode": {
+      "options": {
+        "endpoints": "Endpoints",
+        "full": "Full"
+      }
     }
   },
   "entity": {

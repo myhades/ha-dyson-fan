@@ -10,12 +10,14 @@ from collections.abc import Callable, Mapping
 from contextlib import suppress
 from copy import deepcopy
 from datetime import datetime
-from statistics import median
 from time import monotonic
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
+from homeassistant.const import (
+    STATE_UNAVAILABLE,
+    STATE_UNKNOWN,
+)
 from homeassistant.core import (
     CALLBACK_TYPE,
     Context,
@@ -41,22 +43,25 @@ from .calibration import (
     CalibrationError,
     CalibrationResult,
     build_calibrated_table,
+    build_full_calibrated_table,
 )
 from .const import (
     CALIBRATION_ENDPOINT_CHANGE_FLOOR_WATTS,
     CALIBRATION_ENDPOINT_CHANGE_RATIO,
+    CALIBRATION_FULL_STEP_FLOOR_WATTS,
+    CALIBRATION_FULL_STEP_REFERENCE_RATIO,
     CALIBRATION_INITIAL_COMMANDS,
     CALIBRATION_IR_SEND_INTERVAL_SECONDS,
     CALIBRATION_MAX_PROBES,
-    CALIBRATION_MEASUREMENT_SAMPLES,
     CALIBRATION_MEASUREMENT_SETTLE_SECONDS,
     CALIBRATION_MEASUREMENT_TIMEOUT_SECONDS,
+    CALIBRATION_OSCILLATION_DELTA_MAX_WATTS,
+    CALIBRATION_OSCILLATION_DELTA_MIN_WATTS,
     CALIBRATION_POWER_CYCLE_OFF_SECONDS,
     CALIBRATION_PROBE_COMMANDS,
     CALIBRATION_RESTORE_TIMEOUT_SECONDS,
-    CALIBRATION_STABILITY_FLOOR_WATTS,
-    CALIBRATION_STABILITY_RATIO,
     CALIBRATION_UNCHANGED_PROBES,
+    CONF_CALIBRATION_MODE,
     CONF_FEEDBACK_BURST_ACTION,
     CONF_IR_SEND_INTERVAL,
     CONF_MAX_ATTEMPTS,
@@ -65,9 +70,11 @@ from .const import (
     CONF_POWER_TOGGLE_ACTION,
     CONF_SPEED_DOWN_ACTION,
     CONF_SPEED_UP_ACTION,
+    DEFAULT_CALIBRATION_MODE,
     DEFAULT_IR_SEND_INTERVAL,
     DEFAULT_MAX_ATTEMPTS,
     DOMAIN,
+    FEEDBACK_BURST_TIMEOUT_SECONDS,
     FEEDBACK_TIMEOUT_SECONDS,
     PERSIST_DELAY_SECONDS,
     POST_COMMAND_SETTLE_SECONDS,
@@ -80,13 +87,17 @@ from .const import (
     STATE_WAITING_FEEDBACK,
     STORAGE_KEY_PREFIX,
     STORAGE_VERSION,
+    CalibrationMode,
 )
+from .feedback import ReportCadence, stable_window_average
 from .models import Command, DecodedPower, FanState, StableObservation, TargetState
 from .power import (
     InvalidPowerReading,
     PowerDecoder,
     PowerSignatureTable,
     StablePowerTracker,
+    merge_power_table_options,
+    round_power_watts,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -126,6 +137,9 @@ class DysonFanController:
         )
         self.ir_send_interval = float(
             entry.options.get(CONF_IR_SEND_INTERVAL, DEFAULT_IR_SEND_INTERVAL)
+        )
+        self.calibration_mode = CalibrationMode(
+            entry.options.get(CONF_CALIBRATION_MODE, DEFAULT_CALIBRATION_MODE)
         )
         self.decoder = PowerDecoder(PowerSignatureTable.from_options(entry.options))
         self.tracker = StablePowerTracker(STABLE_REPORTS_REQUIRED)
@@ -183,7 +197,8 @@ class DysonFanController:
         self._calibration_requested = False
         self._calibration_cancel = asyncio.Event()
         self._raw_sequence = 0
-        self._raw_samples: deque[tuple[int, float]] = deque(maxlen=100)
+        self._raw_samples: deque[tuple[int, float, float]] = deque(maxlen=200)
+        self._report_cadence = ReportCadence()
 
     async def async_start(self) -> None:
         """Load persistent data, prepare actions, and subscribe to feedback."""
@@ -667,10 +682,11 @@ class DysonFanController:
         self._notify_listeners()
 
     async def _async_perform_calibration(self, revision: int) -> CalibrationResult:
-        """Normalize the fan and measure its stationary endpoint powers."""
+        """Measure shared calibration data, then run the configured strategy."""
         supposed = self.supposed
         if supposed is None:
             raise CalibrationError("Fan state is not initialized")
+        reference_table = self.decoder.table
 
         self.calibration_step = "normalizing_off"
         self._notify_listeners()
@@ -682,17 +698,21 @@ class DysonFanController:
         await asyncio.sleep(CALIBRATION_POWER_CYCLE_OFF_SECONDS)
         self._check_calibration_revision(revision)
 
-        off_watts = await self._async_measure_stable_power("off", revision)
         off_boundary = (
             self.decoder.table.off + self.decoder.table.speeds[(1, False)]
         ) / 2
+        off_watts = await self._async_measure_stable_power(
+            "off", revision, accept=lambda watts: watts < off_boundary
+        )
         if off_watts >= off_boundary:
             raise CalibrationError("The fan did not reach the expected off state")
 
         self.calibration_step = "powering_on"
         self._notify_listeners()
         await self._async_calibration_send(Command.POWER_TOGGLE, revision)
-        power_on_watts = await self._async_measure_stable_power("power_on", revision)
+        power_on_watts = await self._async_measure_stable_power(
+            "power_on", revision, accept=lambda watts: watts - off_watts >= 0.5
+        )
         if power_on_watts - off_watts < 0.5:
             raise CalibrationError("The fan did not turn on after the power command")
         supposed = self.supposed
@@ -706,14 +726,142 @@ class DysonFanController:
             Command.SPEED_DOWN, "speed_1", revision
         )
         self.supposed = FanState(True, 1, False)
+
+        self.calibration_step = "measuring_oscillation_increment"
+        self._notify_listeners()
+        await self._async_calibration_send(Command.OSCILLATION_TOGGLE, revision)
+        oscillating_speed_1 = await self._async_measure_stable_power(
+            "speed_1_oscillating",
+            revision,
+            accept=lambda watts: (
+                watts - speed_1_watts >= CALIBRATION_OSCILLATION_DELTA_MIN_WATTS
+            ),
+        )
+        oscillation_delta = round_power_watts(oscillating_speed_1 - speed_1_watts)
+        if not (
+            CALIBRATION_OSCILLATION_DELTA_MIN_WATTS
+            <= oscillation_delta
+            <= CALIBRATION_OSCILLATION_DELTA_MAX_WATTS
+        ):
+            raise CalibrationError("The measured oscillation increment is unreasonable")
+        self.calibration_measurements["oscillation_delta"] = oscillation_delta
+
+        # A full power cycle is the only trusted way to clear oscillation before
+        # either calibration mode starts changing speed.
+        await self._async_calibration_send(Command.POWER_TOGGLE, revision)
+        self.calibration_step = "waiting_oscillation_reset"
+        self._notify_listeners()
+        await asyncio.sleep(CALIBRATION_POWER_CYCLE_OFF_SECONDS)
+        self._check_calibration_revision(revision)
+        reset_off_watts = await self._async_measure_stable_power(
+            "off_after_oscillation", revision, accept=lambda watts: watts < off_boundary
+        )
+        if reset_off_watts >= off_boundary:
+            raise CalibrationError(
+                "The fan did not turn off after measuring oscillation"
+            )
+
+        await self._async_calibration_send(Command.POWER_TOGGLE, revision)
+        reset_speed_1_watts = await self._async_measure_stable_power(
+            "speed_1_after_reset",
+            revision,
+            accept=lambda watts: (
+                abs(watts - speed_1_watts)
+                <= self._calibration_threshold(watts, speed_1_watts)
+            ),
+        )
+        if abs(reset_speed_1_watts - speed_1_watts) > self._calibration_threshold(
+            reset_speed_1_watts, speed_1_watts
+        ):
+            raise CalibrationError("Speed 1 changed unexpectedly after the power cycle")
+        self.supposed = FanState(True, 1, False)
+
+        if self.calibration_mode is CalibrationMode.FULL:
+            return await self._async_perform_full_calibration(
+                revision,
+                off_watts,
+                reset_speed_1_watts,
+                oscillation_delta,
+                reference_table,
+            )
+
         speed_10_watts = await self._async_find_endpoint(
             Command.SPEED_UP, "speed_10", revision
         )
         self.supposed = FanState(True, 10, False)
         return build_calibrated_table(
             off_watts,
-            speed_1_watts,
+            reset_speed_1_watts,
             speed_10_watts,
+            oscillation_delta=oscillation_delta,
+            reference_table=reference_table,
+        )
+
+    async def _async_perform_full_calibration(
+        self,
+        revision: int,
+        off_watts: float,
+        speed_1_watts: float,
+        oscillation_delta: float,
+        reference_table: PowerSignatureTable,
+    ) -> CalibrationResult:
+        """Measure every stationary speed and verify the final endpoint."""
+        reference_stationary = [
+            reference_table.speeds[(speed, False)] for speed in range(1, 11)
+        ]
+        stationary = {1: speed_1_watts}
+        for speed in range(2, 11):
+            expected_step = (
+                reference_stationary[speed - 1] - reference_stationary[speed - 2]
+            )
+            minimum_step = max(
+                CALIBRATION_FULL_STEP_FLOOR_WATTS,
+                expected_step * CALIBRATION_FULL_STEP_REFERENCE_RATIO,
+            )
+            minimum_step = round_power_watts(minimum_step)
+            self.calibration_measurements[f"speed_{speed}_minimum_step"] = minimum_step
+            self.calibration_step = f"speed_{speed}_command"
+            self._notify_listeners()
+            await self._async_calibration_send(Command.SPEED_UP, revision)
+            measured = await self._async_measure_stable_power(
+                f"speed_{speed}",
+                revision,
+                accept=lambda watts, minimum=stationary[speed - 1] + minimum_step: (
+                    watts >= minimum
+                ),
+            )
+            if measured - stationary[speed - 1] < minimum_step:
+                raise CalibrationError(
+                    f"Speed {speed} did not increase power by at least "
+                    f"{minimum_step:.2f} W"
+                )
+            stationary[speed] = measured
+
+        confirmed_speed_10 = await self._async_find_endpoint(
+            Command.SPEED_UP, "speed_10_endpoint", revision
+        )
+        if abs(confirmed_speed_10 - stationary[10]) > self._calibration_threshold(
+            confirmed_speed_10, stationary[10]
+        ):
+            raise CalibrationError(
+                "The measured speed sequence did not end at speed 10; "
+                "an infrared command was probably missed"
+            )
+        self.supposed = FanState(True, 10, False)
+        return build_full_calibrated_table(
+            off_watts,
+            stationary,
+            oscillation_delta,
+            reference_table=reference_table,
+        )
+
+    @staticmethod
+    def _calibration_threshold(left: float, right: float) -> float:
+        """Return the shared threshold for comparing stable measurements."""
+        return max(
+            CALIBRATION_ENDPOINT_CHANGE_FLOOR_WATTS,
+            abs(left) * CALIBRATION_ENDPOINT_CHANGE_RATIO,
+            abs(right) * CALIBRATION_ENDPOINT_CHANGE_RATIO,
         )
 
     async def _async_find_endpoint(
@@ -735,11 +883,7 @@ class DysonFanController:
             measured = await self._async_measure_stable_power(
                 f"{label}_probe_{probe}", revision
             )
-            threshold = max(
-                CALIBRATION_ENDPOINT_CHANGE_FLOOR_WATTS,
-                abs(current) * CALIBRATION_ENDPOINT_CHANGE_RATIO,
-                abs(measured) * CALIBRATION_ENDPOINT_CHANGE_RATIO,
-            )
+            threshold = self._calibration_threshold(current, measured)
             change = measured - current
             moving_opposite = (
                 command is Command.SPEED_DOWN and change > threshold
@@ -761,10 +905,6 @@ class DysonFanController:
 
     async def _async_calibration_send(self, command: Command, revision: int) -> None:
         """Send one calibration command and retain every transmitted state step."""
-        if command is Command.OSCILLATION_TOGGLE:
-            raise CalibrationError(
-                "Calibration must not transmit the oscillation command"
-            )
         self._check_calibration_revision(revision)
         if self._last_ir_sent_monotonic is not None:
             calibration_interval = max(
@@ -777,7 +917,8 @@ class DysonFanController:
                 await asyncio.sleep(remaining)
         self._check_calibration_revision(revision)
         if not await self._async_send_command(command, revision):
-            raise CalibrationCancelled
+            self._check_calibration_revision(revision)
+            raise CalibrationError(self.last_error or "Infrared action failed")
 
         supposed = self.supposed
         if supposed is not None:
@@ -795,13 +936,25 @@ class DysonFanController:
                     else None
                 )
                 supposed = FanState(True, speed, supposed.oscillating)
+            elif command is Command.OSCILLATION_TOGGLE and supposed.power:
+                supposed = FanState(
+                    True,
+                    supposed.speed,
+                    not supposed.oscillating,
+                )
             self.supposed = supposed
 
         self.phase = STATE_CALIBRATING
         self._check_calibration_revision(revision)
 
-    async def _async_measure_stable_power(self, label: str, revision: int) -> float:
-        """Measure a stable median from fresh raw sensor reports."""
+    async def _async_measure_stable_power(
+        self,
+        label: str,
+        revision: int,
+        *,
+        accept: Callable[[float], bool] | None = None,
+    ) -> float:
+        """Measure an adaptive, outlier-filtered average from fresh reports."""
         self.calibration_step = f"measuring_{label}"
         self.phase = STATE_CALIBRATING
         await self._async_run_feedback_burst()
@@ -812,26 +965,28 @@ class DysonFanController:
         start_sequence = self._raw_sequence
         self._wake_event.clear()
         try:
-            async with asyncio.timeout(CALIBRATION_MEASUREMENT_TIMEOUT_SECONDS):
+            started = self.hass.loop.time()
+            async with asyncio.timeout(None) as timeout:
                 while True:
+                    timeout.reschedule(
+                        started
+                        + self._report_cadence.timeout(
+                            CALIBRATION_MEASUREMENT_TIMEOUT_SECONDS, 5
+                        )
+                    )
                     self._check_calibration_revision(revision)
                     if not self._source_valid:
                         raise CalibrationError("Power sensor is unavailable or invalid")
                     samples = [
-                        watts
-                        for sequence, watts in self._raw_samples
+                        (timestamp, watts)
+                        for sequence, timestamp, watts in self._raw_samples
                         if sequence > start_sequence
-                    ][-CALIBRATION_MEASUREMENT_SAMPLES:]
-                    if len(samples) == CALIBRATION_MEASUREMENT_SAMPLES:
-                        measured = float(median(samples))
-                        tolerance = max(
-                            CALIBRATION_STABILITY_FLOOR_WATTS,
-                            abs(measured) * CALIBRATION_STABILITY_RATIO,
-                        )
-                        if max(samples) - min(samples) <= tolerance:
-                            self.calibration_measurements[label] = measured
-                            self._notify_listeners()
-                            return measured
+                    ]
+                    measured = stable_window_average(samples)
+                    if measured is not None and (accept is None or accept(measured)):
+                        self.calibration_measurements[label] = measured
+                        self._notify_listeners()
+                        return measured
 
                     observed_sequence = self._raw_sequence
                     self._wake_event.clear()
@@ -845,8 +1000,7 @@ class DysonFanController:
 
     def _apply_calibration_result(self, result: CalibrationResult) -> None:
         """Commit a fully validated calibration to options and runtime state."""
-        options = dict(self.entry.options)
-        options.update(result.table.as_options())
+        options = merge_power_table_options(self.entry.options, result.table)
         self.hass.config_entries.async_update_entry(self.entry, options=options)
         self.decoder = PowerDecoder(result.table)
         self.calibration_scale = result.scale
@@ -868,6 +1022,15 @@ class DysonFanController:
         if self._calibration_cancel.is_set():
             raise CalibrationCancelled
 
+        # An action may transmit before raising. Confirm physical state before
+        # planning relative commands with the active (old or new) power table.
+        revision = self.target_revision
+        feedback = await self._async_wait_for_feedback(revision)
+        self._check_calibration_revision(revision)
+        if feedback is None:
+            raise CalibrationError("No fresh feedback available for restoration")
+        self.supposed = feedback
+
         if not restore_target.power and restore_target.speed is not None:
             await self._async_restore_target(
                 TargetState(True, restore_target.speed, False)
@@ -882,7 +1045,15 @@ class DysonFanController:
         if worker is None:
             raise CalibrationError("Unable to start restoration")
         try:
-            async with asyncio.timeout(CALIBRATION_RESTORE_TIMEOUT_SECONDS):
+            # Restoration may need two feedback windows on a first power-on.
+            async with asyncio.timeout(
+                max(
+                    CALIBRATION_RESTORE_TIMEOUT_SECONDS,
+                    self._report_cadence.timeout(FEEDBACK_TIMEOUT_SECONDS, 3) * 2
+                    + 12 * self.ir_send_interval
+                    + FEEDBACK_BURST_TIMEOUT_SECONDS * 3,
+                )
+            ):
                 await worker
         except TimeoutError:
             if not worker.done():
@@ -923,8 +1094,15 @@ class DysonFanController:
         self._notify_listeners()
 
         try:
-            async with asyncio.timeout(FEEDBACK_TIMEOUT_SECONDS):
+            started = self.hass.loop.time()
+            async with asyncio.timeout(None) as timeout:
                 while revision == self.target_revision:
+                    timeout.reschedule(
+                        started
+                        + self._report_cadence.timeout(
+                            FEEDBACK_TIMEOUT_SECONDS, STABLE_REPORTS_REQUIRED
+                        )
+                    )
                     if self._feedback_sequence > start_sequence:
                         return self._latest_feedback
                     self._wake_event.clear()
@@ -978,7 +1156,9 @@ class DysonFanController:
         self._source_valid = True
         self.last_decoded = decoded
         self._raw_sequence += 1
-        self._raw_samples.append((self._raw_sequence, decoded.watts))
+        timestamp = monotonic()
+        self._raw_samples.append((self._raw_sequence, timestamp, decoded.watts))
+        self._report_cadence.add(timestamp)
         self._wake_event.set()
         if not self._samples_enabled:
             self._notify_listeners()
@@ -1094,6 +1274,8 @@ class DysonFanController:
             "calibration_offset": self.calibration_offset,
             "calibration_started": _as_iso(self.calibration_started),
             "calibration_finished": _as_iso(self.calibration_finished),
+            "calibration_mode": self.calibration_mode,
+            "report_interval": self._report_cadence.interval,
             "source_valid": self._source_valid,
             "feedback_valid": self._feedback_valid,
             "during_attempt": self.during_attempt,

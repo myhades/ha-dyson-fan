@@ -11,6 +11,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.dyson_fan import async_migrate_entry
 from custom_components.dyson_fan.const import (
+    CONF_CALIBRATION_MODE,
     CONF_FEEDBACK_BURST_ACTION,
     CONF_OSCILLATION_TOGGLE_ACTION,
     CONF_POWER_OFF,
@@ -20,6 +21,7 @@ from custom_components.dyson_fan.const import (
     CONF_SPEED_DOWN_ACTION,
     CONF_SPEED_UP_ACTION,
     DOMAIN,
+    CalibrationMode,
     power_signature_key,
 )
 from custom_components.dyson_fan.power import PowerSignatureTable
@@ -104,11 +106,13 @@ async def test_options_flow(hass: HomeAssistant) -> None:
         {
             "max_attempts": 2,
             "ir_send_interval": 0.5,
+            CONF_CALIBRATION_MODE: CalibrationMode.FULL,
         },
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert entry.options["max_attempts"] == 2
     assert entry.options["ir_send_interval"] == 0.5
+    assert entry.options[CONF_CALIBRATION_MODE] == CalibrationMode.FULL
 
 
 async def test_power_table_input_is_rounded_before_validation_and_storage(
