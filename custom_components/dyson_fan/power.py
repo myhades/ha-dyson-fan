@@ -1,18 +1,17 @@
-"""Power signature decoding for Dyson Fan.
-
-This module deliberately has no Home Assistant imports so the decoder and
-stability rules can be tested independently.
-"""
+"""Power unit normalization, signature decoding, and stability tracking."""
 
 from __future__ import annotations
 
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
+from statistics import median
 
 from .const import (
     CONF_POWER_OFF,
+    CONF_POWER_OSCILLATION_DELTA,
     DEFAULT_POWER_OFF,
+    DEFAULT_POWER_OSCILLATION_DELTA,
     DEFAULT_POWER_SIGNATURES,
     MAX_SANE_POWER_WATTS,
     POWER_TABLE_DECIMAL_PLACES,
@@ -37,28 +36,77 @@ class PowerSignatureTable:
     def from_options(cls, options: Mapping[str, object]) -> PowerSignatureTable:
         """Build a signature table from config entry options."""
         off = round_power_watts(options.get(CONF_POWER_OFF, DEFAULT_POWER_OFF))
+        stationary = {
+            speed: round_power_watts(
+                options.get(
+                    power_signature_key(speed, False),
+                    DEFAULT_POWER_SIGNATURES[(speed, False)],
+                )
+            )
+            for speed in range(1, SPEED_COUNT + 1)
+        }
+        if CONF_POWER_OSCILLATION_DELTA in options:
+            oscillation_delta = round_power_watts(options[CONF_POWER_OSCILLATION_DELTA])
+        else:
+            legacy_deltas = [
+                round_power_watts(options[power_signature_key(speed, True)])
+                - stationary[speed]
+                for speed in range(1, SPEED_COUNT + 1)
+                if power_signature_key(speed, True) in options
+            ]
+            oscillation_delta = round_power_watts(
+                median(legacy_deltas)
+                if legacy_deltas
+                else DEFAULT_POWER_OSCILLATION_DELTA
+            )
         speeds = {
             (speed, oscillating): round_power_watts(
-                options.get(
-                    power_signature_key(speed, oscillating),
-                    DEFAULT_POWER_SIGNATURES[(speed, oscillating)],
-                )
+                stationary[speed] + (oscillation_delta if oscillating else 0)
             )
             for speed in range(1, SPEED_COUNT + 1)
             for oscillating in (False, True)
         }
         return cls(off=off, speeds=speeds)
 
+    @property
+    def oscillation_delta(self) -> float:
+        """Return the shared oscillation power increment."""
+        return round_power_watts(
+            median(
+                self.speeds[(speed, True)] - self.speeds[(speed, False)]
+                for speed in range(1, SPEED_COUNT + 1)
+            )
+        )
+
     def as_options(self) -> dict[str, float]:
         """Return the table in config-entry options format."""
-        result = {CONF_POWER_OFF: round_power_watts(self.off)}
+        result = {
+            CONF_POWER_OSCILLATION_DELTA: self.oscillation_delta,
+            CONF_POWER_OFF: round_power_watts(self.off),
+        }
         result.update(
             {
-                power_signature_key(speed, oscillating): round_power_watts(watts)
-                for (speed, oscillating), watts in self.speeds.items()
+                power_signature_key(speed, False): round_power_watts(
+                    self.speeds[(speed, False)]
+                )
+                for speed in range(1, SPEED_COUNT + 1)
             }
         )
         return result
+
+
+def merge_power_table_options(
+    options: Mapping[str, object], table: PowerSignatureTable
+) -> dict[str, object]:
+    """Replace every current or legacy power-table option atomically."""
+    result = dict(options)
+    result.pop(CONF_POWER_OSCILLATION_DELTA, None)
+    result.pop(CONF_POWER_OFF, None)
+    for speed in range(1, SPEED_COUNT + 1):
+        for oscillating in (False, True):
+            result.pop(power_signature_key(speed, oscillating), None)
+    result.update(table.as_options())
+    return result
 
 
 class PowerDecoder:

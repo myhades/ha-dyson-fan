@@ -48,7 +48,7 @@
         },
         "menu_option_descriptions": {
           "control": "修改尝试次数和两次红外发送之间的间隔。",
-          "power_table": "修改用于识别各档风速和摆风状态的功率。"
+          "power_table": "修改关机和各档不摆风功率，以及统一的摆风功率增量。"
         }
       },
       "control": {
@@ -64,34 +64,25 @@
       },
       "power_table": {
         "title": "功率表",
-        "description": "输入每种风扇物理状态下的典型实测功率。",
+        "description": "依次输入摆风功率增量、关机功率和 1 至 10 档不摆风功率。",
         "data": {
+          "power_oscillation_delta": "摆风功率增量",
           "power_off": "关机",
           "power_speed_1_stationary": "1 档，不摆风",
-          "power_speed_1_oscillating": "1 档，摆风",
           "power_speed_2_stationary": "2 档，不摆风",
-          "power_speed_2_oscillating": "2 档，摆风",
           "power_speed_3_stationary": "3 档，不摆风",
-          "power_speed_3_oscillating": "3 档，摆风",
           "power_speed_4_stationary": "4 档，不摆风",
-          "power_speed_4_oscillating": "4 档，摆风",
           "power_speed_5_stationary": "5 档，不摆风",
-          "power_speed_5_oscillating": "5 档，摆风",
           "power_speed_6_stationary": "6 档，不摆风",
-          "power_speed_6_oscillating": "6 档，摆风",
           "power_speed_7_stationary": "7 档，不摆风",
-          "power_speed_7_oscillating": "7 档，摆风",
           "power_speed_8_stationary": "8 档，不摆风",
-          "power_speed_8_oscillating": "8 档，摆风",
           "power_speed_9_stationary": "9 档，不摆风",
-          "power_speed_9_oscillating": "9 档，摆风",
-          "power_speed_10_stationary": "10 档，不摆风",
-          "power_speed_10_oscillating": "10 档，摆风"
+          "power_speed_10_stationary": "10 档，不摆风"
         }
       }
     },
     "error": {
-      "invalid_power_table": "功率必须随档位升高而增加，并且每档的摆风功率必须高于不摆风功率。"
+      "invalid_power_table": "功率必须随档位升高而增加，且加上摆风增量后所有值仍需低于 100 W。"
     }
   },
   "entity": {

@@ -91,8 +91,10 @@ def power_signature_key(speed: int, oscillating: bool) -> str:
 
 
 CONF_POWER_OFF: Final = "power_off"
+CONF_POWER_OSCILLATION_DELTA: Final = "power_oscillation_delta"
 
 DEFAULT_POWER_OFF: Final = 1.2
+DEFAULT_POWER_OSCILLATION_DELTA: Final = 2.9
 DEFAULT_POWER_SIGNATURES: Final[dict[tuple[int, bool], float]] = {
     (1, False): 4.8,
     (1, True): 7.7,

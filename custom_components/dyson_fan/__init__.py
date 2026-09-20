@@ -19,6 +19,7 @@ from .const import (
     STORAGE_VERSION,
 )
 from .controller import DysonFanController
+from .power import PowerSignatureTable, merge_power_table_options
 
 
 @dataclass(slots=True)
@@ -29,6 +30,18 @@ class DysonFanRuntimeData:
 
 
 type DysonFanConfigEntry = ConfigEntry[DysonFanRuntimeData]
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry[Any]) -> bool:
+    """Migrate legacy per-speed oscillation signatures to one increment."""
+    if entry.version < 3:
+        table = PowerSignatureTable.from_options(entry.options)
+        hass.config_entries.async_update_entry(
+            entry,
+            options=merge_power_table_options(entry.options, table),
+            version=3,
+        )
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: DysonFanConfigEntry) -> bool:

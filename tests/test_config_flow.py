@@ -7,11 +7,14 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import STATE_OFF, STATE_UNAVAILABLE
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.dyson_fan import async_migrate_entry
 from custom_components.dyson_fan.const import (
     CONF_FEEDBACK_BURST_ACTION,
     CONF_OSCILLATION_TOGGLE_ACTION,
     CONF_POWER_OFF,
+    CONF_POWER_OSCILLATION_DELTA,
     CONF_POWER_SENSOR,
     CONF_POWER_TOGGLE_ACTION,
     CONF_SPEED_DOWN_ACTION,
@@ -52,14 +55,14 @@ async def test_user_flow(hass: HomeAssistant) -> None:
     assert hass.states.get("button.dyson_fan_calibrate_power_table") is not None
     # Repeated writes of the same wattage arrive through state_reported and must
     # count as separate feedback samples.
-    hass.states.async_set("sensor.dyson_power", "1.2")
-    hass.states.async_set("sensor.dyson_power", "1.2")
-    hass.states.async_set("sensor.dyson_power", "1.2")
+    hass.states.async_set("sensor.dyson_power", "1.2", {"unit_of_measurement": "W"})
+    hass.states.async_set("sensor.dyson_power", "1.2", {"unit_of_measurement": "W"})
+    hass.states.async_set("sensor.dyson_power", "1.2", {"unit_of_measurement": "W"})
     await hass.async_block_till_done()
     assert hass.states.get("fan.dyson_fan").state == STATE_OFF
 
     # An impossible reading immediately invalidates the feedback channel.
-    hass.states.async_set("sensor.dyson_power", "100.1")
+    hass.states.async_set("sensor.dyson_power", "100.1", {"unit_of_measurement": "W"})
     await hass.async_block_till_done()
     assert hass.states.get("fan.dyson_fan").state == STATE_UNAVAILABLE
 
@@ -97,7 +100,11 @@ async def test_options_flow(hass: HomeAssistant) -> None:
     )
     assert result["type"] is FlowResultType.FORM
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"max_attempts": 2, "ir_send_interval": 0.5}
+        result["flow_id"],
+        {
+            "max_attempts": 2,
+            "ir_send_interval": 0.5,
+        },
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert entry.options["max_attempts"] == 2
@@ -122,6 +129,11 @@ async def test_power_table_input_is_rounded_before_validation_and_storage(
         result["flow_id"], {"next_step_id": "power_table"}
     )
     assert result["type"] is FlowResultType.FORM
+    assert [marker.schema for marker in result["data_schema"].schema] == [
+        CONF_POWER_OSCILLATION_DELTA,
+        CONF_POWER_OFF,
+        *(power_signature_key(speed, False) for speed in range(1, 11)),
+    ]
 
     values = PowerSignatureTable.from_options({}).as_options()
     values = {key: value + 0.004 for key, value in values.items()}
@@ -131,6 +143,7 @@ async def test_power_table_input_is_rounded_before_validation_and_storage(
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert all(entry.options[key] == round(value, 2) for key, value in values.items())
+    assert power_signature_key(1, True) not in entry.options
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
@@ -145,6 +158,35 @@ async def test_power_table_input_is_rounded_before_validation_and_storage(
 
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "invalid_power_table"}
+
+
+async def test_legacy_power_table_migrates_to_shared_oscillation_delta(
+    hass: HomeAssistant,
+) -> None:
+    """Version 2 tables retain stationary readings and median oscillation use."""
+    legacy_options: dict[str, float | int] = {
+        "max_attempts": 2,
+        CONF_POWER_OFF: 1.2,
+    }
+    for speed in range(1, 11):
+        legacy_options[power_signature_key(speed, False)] = float(speed * 4)
+        legacy_options[power_signature_key(speed, True)] = float(speed * 4 + 3)
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        entry_id="legacy-entry",
+        unique_id="legacy-entry",
+        version=2,
+        data=_valid_input(),
+        options=legacy_options,
+    )
+    entry.add_to_hass(hass)
+
+    assert await async_migrate_entry(hass, entry)
+
+    assert entry.version == 3
+    assert entry.options[CONF_POWER_OSCILLATION_DELTA] == 3.0
+    assert entry.options[power_signature_key(10, False)] == 40.0
+    assert power_signature_key(10, True) not in entry.options
 
 
 async def test_reconfigure_flow(hass: HomeAssistant) -> None:

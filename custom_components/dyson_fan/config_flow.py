@@ -29,6 +29,7 @@ from .const import (
     CONF_MAX_ATTEMPTS,
     CONF_OSCILLATION_TOGGLE_ACTION,
     CONF_POWER_OFF,
+    CONF_POWER_OSCILLATION_DELTA,
     CONF_POWER_SENSOR,
     CONF_POWER_TOGGLE_ACTION,
     CONF_SPEED_DOWN_ACTION,
@@ -42,7 +43,10 @@ from .const import (
     SPEED_COUNT,
     power_signature_key,
 )
-from .power import PowerSignatureTable
+from .power import (
+    PowerSignatureTable,
+    merge_power_table_options,
+)
 
 
 def _configuration_schema(suggested: dict[str, Any] | None = None) -> vol.Schema:
@@ -98,7 +102,7 @@ async def _async_validate_actions(
 class DysonFanConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle Dyson Fan setup and reconfiguration."""
 
-    VERSION = 2
+    VERSION = 3
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -213,7 +217,7 @@ class DysonFanOptionsFlow(config_entries.OptionsFlowWithReload):
     async def async_step_power_table(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Edit the 21 known power signatures."""
+        """Edit off and stationary power with one oscillation increment."""
         errors: dict[str, str] = {}
         if user_input is not None:
             try:
@@ -221,8 +225,7 @@ class DysonFanOptionsFlow(config_entries.OptionsFlowWithReload):
             except vol.Invalid:
                 errors["base"] = "invalid_power_table"
             else:
-                options = dict(self.config_entry.options)
-                options.update(table.as_options())
+                options = merge_power_table_options(self.config_entry.options, table)
                 return self.async_create_entry(data=options)
 
         defaults = PowerSignatureTable.from_options(
@@ -230,13 +233,16 @@ class DysonFanOptionsFlow(config_entries.OptionsFlowWithReload):
         ).as_options()
         fields: dict[vol.Marker, NumberSelector] = {
             vol.Required(
+                CONF_POWER_OSCILLATION_DELTA,
+                default=defaults[CONF_POWER_OSCILLATION_DELTA],
+            ): _power_input(),
+            vol.Required(
                 CONF_POWER_OFF, default=defaults[CONF_POWER_OFF]
-            ): _power_input()
+            ): _power_input(),
         }
         for speed in range(1, SPEED_COUNT + 1):
-            for oscillating in (False, True):
-                key = power_signature_key(speed, oscillating)
-                fields[vol.Required(key, default=defaults[key])] = _power_input()
+            key = power_signature_key(speed, False)
+            fields[vol.Required(key, default=defaults[key])] = _power_input()
 
         return self.async_show_form(
             step_id="power_table",
@@ -262,13 +268,12 @@ def _validate_power_table(values: dict[str, Any]) -> PowerSignatureTable:
     """Normalize and validate a signature table at two-decimal precision."""
     table = PowerSignatureTable.from_options(values)
     stationary = [table.speeds[(speed, False)] for speed in range(1, 11)]
-    oscillating = [table.speeds[(speed, True)] for speed in range(1, 11)]
     if table.off >= stationary[0]:
         raise vol.Invalid("Off power must be lower than speed 1")
     if any(left >= right for left, right in pairwise(stationary)):
         raise vol.Invalid("Stationary signatures must increase with speed")
-    if any(left >= right for left, right in pairwise(oscillating)):
-        raise vol.Invalid("Oscillating signatures must increase with speed")
-    if any(on <= off for off, on in zip(stationary, oscillating, strict=True)):
-        raise vol.Invalid("Oscillating power must exceed stationary power")
+    if table.oscillation_delta <= 0:
+        raise vol.Invalid("Oscillation power increment must be positive")
+    if table.speeds[(SPEED_COUNT, True)] >= 100:
+        raise vol.Invalid("Oscillating power must remain below 100 W")
     return table

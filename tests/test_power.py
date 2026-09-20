@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from custom_components.dyson_fan.const import DEFAULT_POWER_SIGNATURES
+from custom_components.dyson_fan.const import (
+    CONF_POWER_OSCILLATION_DELTA,
+    DEFAULT_POWER_SIGNATURES,
+    power_signature_key,
+)
 from custom_components.dyson_fan.models import FanState
 from custom_components.dyson_fan.power import (
     InvalidPowerReading,
@@ -22,8 +26,25 @@ def decoder() -> PowerDecoder:
 
 def test_exact_signatures(decoder: PowerDecoder) -> None:
     """Every built-in signature maps back to its physical state."""
-    for (speed, oscillating), watts in DEFAULT_POWER_SIGNATURES.items():
+    table = PowerSignatureTable.from_options({})
+    for (speed, oscillating), watts in table.speeds.items():
         assert decoder.decode(watts).state == FanState(True, speed, oscillating)
+
+
+def test_legacy_oscillation_values_become_one_median_increment() -> None:
+    """Existing 21-state tables migrate without favoring one noisy speed."""
+    options: dict[str, float] = {}
+    for (speed, oscillating), watts in DEFAULT_POWER_SIGNATURES.items():
+        options[power_signature_key(speed, oscillating)] = watts
+
+    table = PowerSignatureTable.from_options(options)
+
+    assert table.oscillation_delta == 2.9
+    assert table.as_options()[CONF_POWER_OSCILLATION_DELTA] == 2.9
+    assert all(
+        table.speeds[(speed, True)] - table.speeds[(speed, False)] == pytest.approx(2.9)
+        for speed in range(1, 11)
+    )
 
 
 def test_off_and_negative_meter_direction(decoder: PowerDecoder) -> None:
