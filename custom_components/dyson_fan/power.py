@@ -7,6 +7,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from statistics import median
 
+from homeassistant.util.unit_conversion import PowerConverter
+
 from .const import (
     CONF_POWER_OFF,
     CONF_POWER_OSCILLATION_DELTA,
@@ -23,6 +25,13 @@ from .models import DecodedPower, FanState, StableObservation
 
 class InvalidPowerReading(ValueError):
     """Raised when a power reading cannot be used as feedback."""
+
+
+def power_to_watts(value: object, unit: str | None) -> float:
+    """Normalize real power units; never interpret energy or unitless values as W."""
+    if unit not in PowerConverter.VALID_UNITS:
+        raise InvalidPowerReading(f"Unsupported power unit: {unit!r}")
+    return PowerConverter.convert(_finite_float(value), unit, "W")
 
 
 @dataclass(frozen=True, slots=True)

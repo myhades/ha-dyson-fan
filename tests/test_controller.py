@@ -61,6 +61,23 @@ async def test_feedback_burst_runs_generic_action(hass: HomeAssistant) -> None:
     await controller.async_shutdown()
 
 
+async def test_feedback_normalizes_units_before_decoding(hass: HomeAssistant) -> None:
+    """kW works, while energy and missing units invalidate the same sensor."""
+    entry = _entry()
+    controller = DysonFanController(hass, entry, entry.data)
+    for _ in range(3):
+        controller._async_process_power_state(
+            State("sensor.dyson_power", "0.0522", {"unit_of_measurement": "kW"})
+        )
+    assert controller.accepted == FanState(True, 10, False)
+    for unit in ("kWh", None):
+        controller._async_process_power_state(
+            State("sensor.dyson_power", "52.2", {"unit_of_measurement": unit})
+        )
+        assert not controller.available
+        assert "Unsupported power unit" in controller.last_error
+
+
 @pytest.mark.parametrize("interval", [0.25, 10.0])
 async def test_feedback_window_uses_actual_cadence(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, interval: float

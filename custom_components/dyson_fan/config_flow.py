@@ -10,6 +10,7 @@ from uuid import uuid4
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigFlowResult
+from homeassistant.const import ATTR_UNIT_OF_MEASUREMENT
 from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.script import async_validate_actions_config
@@ -50,8 +51,10 @@ from .const import (
     power_signature_key,
 )
 from .power import (
+    InvalidPowerReading,
     PowerSignatureTable,
     merge_power_table_options,
+    power_to_watts,
 )
 
 
@@ -83,6 +86,11 @@ async def _async_validate_actions(
 ) -> dict[str, str]:
     """Validate every user-selected HA action sequence."""
     errors: dict[str, str] = {}
+    if state := hass.states.get(user_input[CONF_POWER_SENSOR]):
+        try:
+            power_to_watts(0, state.attributes.get(ATTR_UNIT_OF_MEASUREMENT))
+        except InvalidPowerReading:
+            errors[CONF_POWER_SENSOR] = "invalid_power_unit"
     for key in ACTION_KEYS:
         value = user_input.get(key)
         sequence = [value] if isinstance(value, dict) else value

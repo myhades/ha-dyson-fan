@@ -33,7 +33,8 @@
       }
     },
     "error": {
-      "invalid_action": "请至少选择一个有效的 Home Assistant 动作。"
+      "invalid_action": "请至少选择一个有效的 Home Assistant 动作。",
+      "invalid_power_unit": "请选择单位为 W、kW 等功率单位的传感器。"
     },
     "abort": {
       "reconfigure_successful": "Dyson Fan 已成功重新配置。"

@@ -83,6 +83,18 @@ async def test_empty_action_is_rejected(hass: HomeAssistant) -> None:
     assert result["errors"] == {CONF_SPEED_UP_ACTION: "invalid_action"}
 
 
+async def test_energy_sensor_is_rejected(hass: HomeAssistant) -> None:
+    """Prevent an energy total from silently becoming instantaneous fan power."""
+    hass.states.async_set("sensor.dyson_power", "1.2", {"unit_of_measurement": "kWh"})
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], _valid_input()
+    )
+    assert result["errors"] == {CONF_POWER_SENSOR: "invalid_power_unit"}
+
+
 async def test_options_flow(hass: HomeAssistant) -> None:
     """Control options are editable through the native options menu."""
     result = await hass.config_entries.flow.async_init(

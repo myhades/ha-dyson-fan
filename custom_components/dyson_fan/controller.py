@@ -15,6 +15,7 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
+    ATTR_UNIT_OF_MEASUREMENT,
     STATE_UNAVAILABLE,
     STATE_UNKNOWN,
 )
@@ -97,6 +98,7 @@ from .power import (
     PowerSignatureTable,
     StablePowerTracker,
     merge_power_table_options,
+    power_to_watts,
     round_power_watts,
 )
 
@@ -1148,7 +1150,11 @@ class DysonFanController:
             self._async_mark_invalid_feedback(f"power_sensor_{state.state}")
             return
         try:
-            decoded = self.decoder.decode(state.state)
+            decoded = self.decoder.decode(
+                power_to_watts(
+                    state.state, state.attributes.get(ATTR_UNIT_OF_MEASUREMENT)
+                )
+            )
         except InvalidPowerReading as err:
             self._async_mark_invalid_feedback(str(err))
             return
