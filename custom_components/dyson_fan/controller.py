@@ -201,6 +201,7 @@ class DysonFanController:
         self._raw_sequence = 0
         self._raw_samples: deque[tuple[int, float, float]] = deque(maxlen=200)
         self._report_cadence = ReportCadence()
+        self._target_changed = asyncio.Event()
 
     async def async_start(self) -> None:
         """Load persistent data, prepare actions, and subscribe to feedback."""
@@ -386,6 +387,7 @@ class DysonFanController:
         # Stop normal convergence after any IR action already in progress.
         self.target = restore_target
         self.target_revision += 1
+        self._target_changed.set()
         revision = self.target_revision
         self._wake_event.set()
         self._notify_listeners()
@@ -408,6 +410,7 @@ class DysonFanController:
             self._calibration_cancel.set()
         self.target = target
         self.target_revision += 1
+        self._target_changed.set()
         if context is not None:
             self._context = context
         self.last_error = None
@@ -1123,11 +1126,28 @@ class DysonFanController:
         """Run an optional action that temporarily accelerates feedback."""
         if self._feedback_burst_action is None:
             return
+        self._target_changed.clear()
+        action = asyncio.create_task(
+            self._feedback_burst_action.async_run(context=self._context)
+        )
+        superseded = asyncio.create_task(self._target_changed.wait())
         try:
-            await self._feedback_burst_action.async_run(context=self._context)
+            done, _ = await asyncio.wait(
+                (action, superseded),
+                timeout=FEEDBACK_BURST_TIMEOUT_SECONDS,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if action in done:
+                await action
+            elif not done:
+                _LOGGER.debug("Power feedback burst timed out")
         except (HomeAssistantError, RuntimeError, ValueError) as err:
             # Burst is an optimization; losing it must never block normal feedback.
             _LOGGER.debug("Unable to request power feedback burst: %s", err)
+        finally:
+            action.cancel()
+            superseded.cancel()
+            await asyncio.gather(action, superseded, return_exceptions=True)
 
     @callback
     def _async_on_state_changed(self, event: Event[EventStateChangedData]) -> None:

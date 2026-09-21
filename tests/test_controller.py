@@ -61,6 +61,36 @@ async def test_feedback_burst_runs_generic_action(hass: HomeAssistant) -> None:
     await controller.async_shutdown()
 
 
+@pytest.mark.parametrize("supersede", [False, True])
+async def test_burst_wait_is_bounded_and_cancellable(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, supersede: bool
+) -> None:
+    """An optional action cannot block feedback indefinitely or hold a newer target."""
+    from custom_components.dyson_fan import controller as module
+
+    monkeypatch.setattr(module, "FEEDBACK_BURST_TIMEOUT_SECONDS", 0.02)
+    entry = _entry()
+    controller = DysonFanController(hass, entry, entry.data)
+    entered = asyncio.Event()
+    stopped = asyncio.Event()
+
+    async def blocked(**kwargs: object) -> None:
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+
+    controller._feedback_burst_action = AsyncMock()
+    controller._feedback_burst_action.async_run.side_effect = blocked
+    task = asyncio.create_task(controller._async_run_feedback_burst())
+    await entered.wait()
+    if supersede:
+        controller.async_request_turn_off()
+    await asyncio.wait_for(task, 1)
+    assert stopped.is_set()
+
+
 async def test_feedback_normalizes_units_before_decoding(hass: HomeAssistant) -> None:
     """kW works, while energy and missing units invalidate the same sensor."""
     entry = _entry()
