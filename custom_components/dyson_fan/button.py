@@ -17,7 +17,9 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the automatic calibration button."""
-    async_add_entities([DysonFanCalibrationButton(entry)])
+    async_add_entities(
+        [DysonFanCalibrationButton(entry), DysonFanUndoCalibrationButton(entry)]
+    )
 
 
 class DysonFanCalibrationButton(DysonFanEntity, ButtonEntity):
@@ -40,3 +42,22 @@ class DysonFanCalibrationButton(DysonFanEntity, ButtonEntity):
     async def async_press(self) -> None:
         """Schedule calibration without blocking the button action call."""
         self.controller.async_request_calibration(self._context)
+
+
+class DysonFanUndoCalibrationButton(DysonFanEntity, ButtonEntity):
+    """Restore the power table saved before the last successful calibration."""
+
+    _attr_translation_key = "undo_calibration"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_icon = "mdi:undo"
+
+    def __init__(self, entry: DysonFanConfigEntry) -> None:
+        super().__init__(entry)
+        self._attr_unique_id = f"{entry.entry_id}_undo_calibration"
+
+    @property
+    def available(self) -> bool:
+        return self.controller.can_undo_calibration
+
+    async def async_press(self) -> None:
+        await self.controller.async_undo_calibration()

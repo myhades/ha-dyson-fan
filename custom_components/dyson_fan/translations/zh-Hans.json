@@ -100,6 +100,9 @@
     "button": {
       "calibrate_power_table": {
         "name": "校准功率表"
+      },
+      "undo_calibration": {
+        "name": "撤销上次校准"
       }
     },
     "sensor": {

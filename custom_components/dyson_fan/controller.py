@@ -75,6 +75,7 @@ from .const import (
     DEFAULT_IR_SEND_INTERVAL,
     DEFAULT_MAX_ATTEMPTS,
     DOMAIN,
+    EVENT_CALIBRATION_FINISHED,
     FEEDBACK_BURST_TIMEOUT_SECONDS,
     FEEDBACK_TIMEOUT_SECONDS,
     PERSIST_DELAY_SECONDS,
@@ -201,11 +202,21 @@ class DysonFanController:
         self._raw_sequence = 0
         self._raw_samples: deque[tuple[int, float, float]] = deque(maxlen=200)
         self._report_cadence = ReportCadence()
+        self._calibration_backup: dict[str, dict[str, float]] | None = None
         self._target_changed = asyncio.Event()
 
     async def async_start(self) -> None:
         """Load persistent data, prepare actions, and subscribe to feedback."""
         stored = await self._store.async_load()
+        if stored and isinstance(stored.get("calibration_backup"), dict):
+            backup = stored["calibration_backup"]
+            try:
+                self._calibration_backup = {
+                    key: PowerSignatureTable.from_options(backup[key]).as_options()
+                    for key in ("previous", "applied")
+                }
+            except KeyError, TypeError, ValueError:
+                _LOGGER.warning("Ignoring invalid saved calibration backup")
         if stored and isinstance(stored.get("last_speed"), int):
             speed = int(stored["last_speed"])
             if 1 <= speed <= 10:
@@ -277,7 +288,7 @@ class DysonFanController:
         if self._feedback_burst_action is not None:
             await self._feedback_burst_action.async_unload()
             self._feedback_burst_action = None
-        await self._store.async_save({"last_speed": self.last_speed})
+        await self._store.async_save(self._storage_data())
 
     @callback
     def async_add_listener(self, listener: ControllerListener) -> CALLBACK_TYPE:
@@ -619,6 +630,29 @@ class DysonFanController:
     async def _async_calibrate(
         self, restore_target: TargetState, revision: int
     ) -> None:
+        """Ensure every started calibration emits exactly one completion event."""
+        try:
+            await self._async_calibrate_and_restore(restore_target, revision)
+        except asyncio.CancelledError:
+            if self.calibration_result in ("success", "failed"):
+                self.calibration_result += "_restore_cancelled"
+            else:
+                self.calibration_result = "cancelled"
+            raise
+        except Exception as err:
+            self.calibration_result = (
+                "success_restore_failed"
+                if self.calibration_result == "success"
+                else "failed"
+            )
+            self.calibration_error = f"unexpected_error: {err}"
+            _LOGGER.exception("Unexpected calibration task failure")
+        finally:
+            self._finish_calibration()
+
+    async def _async_calibrate_and_restore(
+        self, restore_target: TargetState, revision: int
+    ) -> None:
         """Run calibration transactionally, then restore or honor a new target."""
         user_cancelled = False
         try:
@@ -633,7 +667,7 @@ class DysonFanController:
             self.tracker.reset()
             result = await self._async_perform_calibration(revision)
             self._check_calibration_revision(revision)
-            self._apply_calibration_result(result)
+            await self._async_apply_calibration_result(result)
             self.calibration_result = "success"
         except CalibrationCancelled:
             user_cancelled = True
@@ -643,7 +677,7 @@ class DysonFanController:
             self.calibration_result = "failed"
             self.calibration_error = str(err)
             _LOGGER.warning("Automatic power-table calibration failed: %s", err)
-        except (HomeAssistantError, RuntimeError, ValueError) as err:
+        except (HomeAssistantError, RuntimeError, ValueError, OSError) as err:
             self.calibration_result = "failed"
             self.calibration_error = f"unexpected_error: {err}"
             _LOGGER.exception("Unexpected automatic calibration failure")
@@ -667,7 +701,7 @@ class DysonFanController:
                 else:
                     self.calibration_result = "cancelled"
                     self.calibration_error = None
-            except (CalibrationError, TimeoutError) as err:
+            except (CalibrationError, TimeoutError, HomeAssistantError) as err:
                 suffix = f"restore_failed: {err}"
                 self.calibration_error = (
                     f"{self.calibration_error}; {suffix}"
@@ -677,13 +711,33 @@ class DysonFanController:
                 if self.calibration_result == "success":
                     self.calibration_result = "success_restore_failed"
 
-        self.calibrating = False
-        self.calibration_step = "finished"
-        self.calibration_finished = dt_util.utcnow()
         if user_cancelled:
             self._ensure_worker()
         elif self.phase != STATE_ERROR:
             self.phase = STATE_IDLE
+
+    def _finish_calibration(self) -> None:
+        """Publish the final result after restoration, without a diagnostics sensor."""
+        self.calibrating = False
+        self.calibration_step = "finished"
+        self.calibration_finished = dt_util.utcnow()
+        registry = er.async_get(self.hass)
+        entity_id = registry.async_get_entity_id("fan", DOMAIN, self.entry.entry_id)
+        entity = registry.async_get(entity_id) if entity_id else None
+        self.hass.bus.async_fire(
+            EVENT_CALIBRATION_FINISHED,
+            {
+                "config_entry_id": self.entry.entry_id,
+                "device_id": entity.device_id if entity else None,
+                "entity_id": entity_id,
+                "mode": self.calibration_mode.value,
+                "result": self.calibration_result,
+                "error": self.calibration_error,
+                "started_at": _as_iso(self.calibration_started),
+                "finished_at": _as_iso(self.calibration_finished),
+            },
+            context=self._context,
+        )
         self._notify_listeners()
 
     async def _async_perform_calibration(self, revision: int) -> CalibrationResult:
@@ -1003,8 +1057,13 @@ class DysonFanController:
                 f"Timed out waiting for stable power at {label}"
             ) from err
 
-    def _apply_calibration_result(self, result: CalibrationResult) -> None:
+    async def _async_apply_calibration_result(self, result: CalibrationResult) -> None:
         """Commit a fully validated calibration to options and runtime state."""
+        self._calibration_backup = {
+            "previous": self.decoder.table.as_options(),
+            "applied": result.table.as_options(),
+        }
+        await self._store.async_save(self._storage_data())
         options = merge_power_table_options(self.entry.options, result.table)
         self.hass.config_entries.async_update_entry(self.entry, options=options)
         self.decoder = PowerDecoder(result.table)
@@ -1250,9 +1309,41 @@ class DysonFanController:
         if speed is None or not 1 <= speed <= 10 or speed == self.last_speed:
             return
         self.last_speed = speed
-        self._store.async_delay_save(
-            lambda: {"last_speed": self.last_speed}, PERSIST_DELAY_SECONDS
+        self._store.async_delay_save(self._storage_data, PERSIST_DELAY_SECONDS)
+
+    def _storage_data(self) -> dict[str, Any]:
+        """Persist speed memory and the single undo snapshot together."""
+        return {
+            "last_speed": self.last_speed,
+            "calibration_backup": self._calibration_backup,
+        }
+
+    @property
+    def can_undo_calibration(self) -> bool:
+        """Only undo a calibration which has not been superseded by manual edits."""
+        return bool(
+            self._calibration_backup
+            and self.decoder.table.as_options() == self._calibration_backup["applied"]
+            and not self.calibrating
+            and not self.during_attempt
         )
+
+    async def async_undo_calibration(self) -> None:
+        """Restore the previous table without sending infrared commands."""
+        if not self.can_undo_calibration or self._calibration_backup is None:
+            raise HomeAssistantError("No calibration is available to undo")
+        table = PowerSignatureTable.from_options(self._calibration_backup["previous"])
+        self.hass.config_entries.async_update_entry(
+            self.entry, options=merge_power_table_options(self.entry.options, table)
+        )
+        self.decoder = PowerDecoder(table)
+        self._calibration_backup = None
+        self.tracker.reset()
+        self.available = False
+        self._feedback_valid = False
+        self.phase = STATE_INITIALIZING
+        await self._store.async_save(self._storage_data())
+        self._notify_listeners()
 
     @callback
     def _target_base(self) -> TargetState:
@@ -1301,6 +1392,7 @@ class DysonFanController:
             "calibration_started": _as_iso(self.calibration_started),
             "calibration_finished": _as_iso(self.calibration_finished),
             "calibration_mode": self.calibration_mode,
+            "can_undo_calibration": self.can_undo_calibration,
             "report_interval": self._report_cadence.interval,
             "source_valid": self._source_valid,
             "feedback_valid": self._feedback_valid,

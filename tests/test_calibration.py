@@ -12,6 +12,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.dyson_fan.calibration import (
     CALIBRATION_REFERENCE_TABLE,
+    CalibrationCancelled,
     CalibrationError,
     build_calibrated_table,
     build_full_calibrated_table,
@@ -27,6 +28,7 @@ from custom_components.dyson_fan.const import (
     CONF_SPEED_DOWN_ACTION,
     CONF_SPEED_UP_ACTION,
     DOMAIN,
+    EVENT_CALIBRATION_FINISHED,
     CalibrationMode,
 )
 from custom_components.dyson_fan.controller import DysonFanController
@@ -311,6 +313,134 @@ async def test_power_increase_that_never_arrives_times_out(
         await controller._async_measure_stable_power(
             "speed_2", 1, accept=lambda watts: watts >= 5.31
         )
+
+
+async def test_failed_ir_is_failure_not_cancellation(hass: HomeAssistant) -> None:
+    """A transmitter exception preserves the error and attempts restoration."""
+    entry = _entry()
+    controller = DysonFanController(hass, entry, entry.data)
+    controller.target_revision = 1
+    controller.calibrating = True
+    controller.supposed = FanState(True, 2, False)
+    controller._actions[Command.SPEED_UP] = AsyncMock()
+    controller._actions[Command.SPEED_UP].async_run.side_effect = RuntimeError(
+        "IR offline"
+    )
+    controller._async_perform_calibration = lambda revision: (
+        controller._async_calibration_send(Command.SPEED_UP, revision)
+    )
+    controller._async_restore_after_calibration = AsyncMock()
+    events = []
+    hass.bus.async_listen(EVENT_CALIBRATION_FINISHED, events.append)
+    await controller._async_calibrate(TargetState(True, 2, False), 1)
+    await hass.async_block_till_done()
+    assert controller.calibration_result == "failed"
+    assert "IR offline" in controller.calibration_error
+    controller._async_restore_after_calibration.assert_awaited_once()
+    assert len(events) == 1
+    assert events[0].data["result"] == "failed"
+
+
+@pytest.mark.parametrize("restore_cancelled", [False, True])
+async def test_calibration_completion_event_follows_restoration(
+    hass: HomeAssistant, restore_cancelled: bool
+) -> None:
+    """Automation sees one final result even with all diagnostic entities disabled."""
+    entry = _entry()
+    entry.add_to_hass(hass)
+    controller = DysonFanController(hass, entry, entry.data)
+    controller.target_revision = 1
+    controller.calibrating = True
+    controller._async_perform_calibration = AsyncMock(
+        return_value=build_calibrated_table(1.3, 5.0, 55.0)
+    )
+    events = []
+    hass.bus.async_listen(EVENT_CALIBRATION_FINISHED, events.append)
+
+    async def restore(_):
+        assert not events
+        if restore_cancelled:
+            raise CalibrationCancelled
+
+    controller._async_restore_after_calibration = restore
+    await controller._async_calibrate(TargetState(True, 2, False), 1)
+    await hass.async_block_till_done()
+    assert len(events) == 1
+    assert events[0].data["config_entry_id"] == entry.entry_id
+    assert events[0].data["result"] == (
+        "success_restore_cancelled" if restore_cancelled else "success"
+    )
+
+
+async def test_undo_calibration_survives_restart_and_sends_no_ir(
+    hass: HomeAssistant,
+) -> None:
+    """The previous table is persistent and undo does not move the physical fan."""
+    entry = _entry()
+    entry.add_to_hass(hass)
+    first = DysonFanController(hass, entry, entry.data)
+    await first.async_start()
+    previous = first.decoder.table
+    result = build_calibrated_table(1.3, 5.0, 55.0)
+    await first._async_apply_calibration_result(result)
+    await first.async_shutdown()
+
+    second = DysonFanController(hass, entry, entry.data)
+    await second.async_start()
+    second._async_send_command = AsyncMock()
+    assert second.can_undo_calibration
+    await second.async_undo_calibration()
+    assert second.decoder.table == previous
+    assert not second.can_undo_calibration
+    assert not second.available
+    second._async_send_command.assert_not_called()
+    await second.async_shutdown()
+
+
+async def test_manual_edit_disables_undo(hass: HomeAssistant) -> None:
+    """Undo cannot silently erase a power-table edit after calibration."""
+    entry = _entry()
+    entry.add_to_hass(hass)
+    controller = DysonFanController(hass, entry, entry.data)
+    await controller._async_apply_calibration_result(
+        build_calibrated_table(1.3, 5.0, 55.0)
+    )
+    controller.decoder.table = PowerSignatureTable.from_options({"power_off": 1.8})
+    assert not controller.can_undo_calibration
+
+
+async def test_shutdown_during_restoration_emits_one_final_event(
+    hass: HomeAssistant,
+) -> None:
+    """Cancelling the background task must not leave automations waiting forever."""
+    entry = _entry()
+    entry.add_to_hass(hass)
+    controller = DysonFanController(hass, entry, entry.data)
+    controller.target_revision = 1
+    controller.calibrating = True
+    controller._async_perform_calibration = AsyncMock(
+        return_value=build_calibrated_table(1.3, 5.0, 55.0)
+    )
+    restoring = asyncio.Event()
+    events = []
+    hass.bus.async_listen(EVENT_CALIBRATION_FINISHED, events.append)
+
+    async def restore(_):
+        restoring.set()
+        await asyncio.Event().wait()
+
+    controller._async_restore_after_calibration = restore
+    task = asyncio.create_task(
+        controller._async_calibrate(TargetState(True, 2, False), 1)
+    )
+    await restoring.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await hass.async_block_till_done()
+    assert not controller.calibrating
+    assert len(events) == 1
+    assert events[0].data["result"] == "success_restore_cancelled"
 
 
 async def test_restoration_uses_feedback_instead_of_failed_command_prediction(
