@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from unittest.mock import AsyncMock
 
 import pytest
@@ -21,7 +22,7 @@ from custom_components.dyson_fan.const import (
     CONF_SPEED_UP_ACTION,
     DOMAIN,
 )
-from custom_components.dyson_fan.controller import DysonFanController
+from custom_components.dyson_fan.controller import DysonFanController, _ActionLogger
 from custom_components.dyson_fan.models import Command, FanState, TargetState
 
 
@@ -41,6 +42,120 @@ def _entry() -> MockConfigEntry:
         },
         options={CONF_MAX_ATTEMPTS: 1, CONF_IR_SEND_INTERVAL: 0},
     )
+
+
+async def test_invalid_feedback_logs_once_per_category_and_recovers(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Changing invalid watts and repeated good samples must not flood logs."""
+    caplog.set_level(logging.DEBUG, logger="custom_components.dyson_fan")
+    entry = _entry()
+    controller = DysonFanController(hass, entry, entry.data)
+    for watts in range(101, 151):
+        controller._async_process_power_state(
+            State(controller.power_sensor, str(watts), {"unit_of_measurement": "W"})
+        )
+    assert caplog.text.count("Invalid power feedback") == 1
+    for _ in range(20):
+        controller._async_process_power_state(
+            State(controller.power_sensor, "52.2", {"unit_of_measurement": "W"})
+        )
+    assert caplog.text.count("Power feedback recovered") == 1
+    assert caplog.text.count("Observed fan state changed") == 1
+    controller._async_process_power_state(
+        State(controller.power_sensor, "155", {"unit_of_measurement": "W"})
+    )
+    assert caplog.text.count("Invalid power feedback") == 2
+
+
+@pytest.mark.parametrize("feedback", [None, FanState(True, 3, False)])
+async def test_control_failure_logs_one_warning_after_attempts(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture, feedback: FanState | None
+) -> None:
+    """Timeouts and exhausted mismatch retries have one actionable summary."""
+    entry = _entry()
+    controller = DysonFanController(hass, entry, entry.data)
+    controller.max_attempts = 3
+    controller.target_revision = 1
+    controller.target = TargetState(True, 7, False)
+    controller.supposed = FanState(True, 1, False)
+    controller._async_execute_target = AsyncMock(return_value=True)
+    controller._async_wait_for_feedback = AsyncMock(return_value=feedback)
+    await controller._async_worker()
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "Control failed" in warnings[0].message
+    assert ("feedback_timeout" if feedback is None else "target_mismatch") in warnings[
+        0
+    ].message
+    assert controller.attempt_count == (1 if feedback is None else 3)
+
+
+async def test_script_logging_is_scoped_and_quiet_at_info(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """IR script chatter is visible under integration DEBUG, not INFO."""
+    entry = _entry()
+    controller = DysonFanController(hass, entry, entry.data)
+    await controller.async_start()
+    caplog.set_level(logging.INFO)
+    assert await controller._async_send_command(Command.SPEED_UP, 0)
+    assert not caplog.records
+    caplog.set_level(logging.DEBUG, logger="custom_components.dyson_fan")
+    assert await controller._async_send_command(Command.SPEED_UP, 0)
+    script_records = [
+        r for r in caplog.records if "Running dyson_fan script" in r.message
+    ]
+    assert len(script_records) == 1
+    assert script_records[0].name == "custom_components.dyson_fan.controller.actions"
+    assert script_records[0].levelno == logging.DEBUG
+    await controller.async_shutdown()
+
+
+def test_action_logger_preserves_unexpected_tracebacks(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Expected script errors are details; programming errors retain a traceback."""
+    logger = _ActionLogger(logging.getLogger("custom_components.dyson_fan.actions"), {})
+    caplog.set_level(logging.DEBUG)
+    logger.error("expected action failure")
+    try:
+        raise RuntimeError("unexpected failure")
+    except RuntimeError:
+        logger.exception("unexpected action failure")
+    assert caplog.records[0].levelno == logging.DEBUG
+    assert caplog.records[1].levelno == logging.ERROR
+    assert caplog.records[1].exc_info is not None
+
+
+async def test_action_retries_do_not_duplicate_warning_logs(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A real HA script failure on each retry has just one final warning."""
+
+    def fail(call):
+        raise HomeAssistantError("IR transmitter offline")
+
+    hass.services.async_register("dyson_test", "fail", fail)
+    entry = _entry()
+    data = dict(entry.data)
+    data[CONF_SPEED_UP_ACTION] = [{"action": "dyson_test.fail"}]
+    controller = DysonFanController(hass, entry, data)
+    await controller.async_start()
+    controller.max_attempts = 3
+    controller.target_revision = 1
+    controller.target = TargetState(True, 2, False)
+    controller.supposed = FanState(True, 1, False)
+    caplog.set_level(logging.DEBUG, logger="custom_components.dyson_fan")
+
+    await controller._async_worker()
+
+    failures = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(failures) == 1
+    assert "Control failed" in failures[0].message
+    assert "IR transmitter offline" in failures[0].message
+    assert controller.attempt_count == 3
+    await controller.async_shutdown()
 
 
 async def test_feedback_burst_runs_generic_action(hass: HomeAssistant) -> None:
