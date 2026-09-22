@@ -19,7 +19,7 @@ Power readings above 100 W are treated as invalid feedback.
 
 ## Installation
 
-Home Assistant Core must be `2026.7.0` or newer.
+Home Assistant Core must be `2026.8.0` or newer.
 
 Choose your preferred installation method, and reboot Home Assistant afterward.
 
