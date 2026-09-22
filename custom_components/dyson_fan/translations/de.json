@@ -34,7 +34,7 @@
     },
     "error": {
       "invalid_action": "Mindestens eine gültige Home Assistant-Aktion auswählen.",
-      "invalid_power_unit": "Einen Leistungssensor mit einer Einheit wie W oder kW auswählen."
+      "invalid_power_unit": "Eine Leistungseinheit wie W oder kW verwenden. Ohne Einheit gilt W."
     },
     "abort": {
       "reconfigure_successful": "Dyson Ventilator wurde neu konfiguriert."

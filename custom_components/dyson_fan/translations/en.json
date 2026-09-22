@@ -34,7 +34,7 @@
     },
     "error": {
       "invalid_action": "Select at least one valid Home Assistant action.",
-      "invalid_power_unit": "Select a power sensor with a power unit such as W or kW."
+      "invalid_power_unit": "Use a power unit such as W or kW, or no unit (assumed W)."
     },
     "abort": {
       "reconfigure_successful": "Dyson Fan was reconfigured successfully."

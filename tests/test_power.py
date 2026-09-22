@@ -15,6 +15,7 @@ from custom_components.dyson_fan.power import (
     PowerDecoder,
     PowerSignatureTable,
     StablePowerTracker,
+    power_to_watts,
 )
 
 
@@ -51,6 +52,23 @@ def test_off_and_negative_meter_direction(decoder: PowerDecoder) -> None:
     """Off decodes correctly and reversed meters are treated as absolute power."""
     assert decoder.decode(1.2).state == FanState(False, None, False)
     assert decoder.decode(-18.2).state == FanState(True, 5, False)
+
+
+@pytest.mark.parametrize("unit", ["W", "kW", None, "", "   "])
+@pytest.mark.parametrize("sign", [1, -1])
+def test_units_and_signs_preserve_all_power_states(
+    decoder: PowerDecoder, unit: str | None, sign: int
+) -> None:
+    """Every off/speed/oscillation signature is equivalent in either direction."""
+    divisor = 1000 if unit == "kW" else 1
+    table = decoder.table
+    for watts in [table.off, *table.speeds.values()]:
+        normalized = power_to_watts(sign * watts / divisor, unit)
+        decoded = decoder.decode(normalized)
+        assert decoded.state == decoder.decode(watts).state
+        assert decoded.watts == pytest.approx(watts)
+    with pytest.raises(InvalidPowerReading, match="safety limit"):
+        decoder.decode(power_to_watts(sign * 100.1 / divisor, unit))
 
 
 @pytest.mark.parametrize("value", ["unknown", None, float("nan"), 100.1, -500])

@@ -15,7 +15,7 @@ Dyson Fan integrates the Dyson AM07 into Home Assistant with fast, real-world st
 - An infrared (IR) blaster.
 - A Dyson AM07 fan.
 
-Power readings above 100 W are treated as invalid feedback.
+Readings without a unit are treated as W. Negative readings use their absolute value; values above 100 W are treated as invalid feedback.
 
 ## Installation
 

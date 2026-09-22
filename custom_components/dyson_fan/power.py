@@ -28,7 +28,9 @@ class InvalidPowerReading(ValueError):
 
 
 def power_to_watts(value: object, unit: str | None) -> float:
-    """Normalize real power units; never interpret energy or unitless values as W."""
+    """Normalize power units, assuming watts only when the unit is absent or blank."""
+    if unit is None or (isinstance(unit, str) and not unit.strip()):
+        unit = "W"
     if unit not in PowerConverter.VALID_UNITS:
         raise InvalidPowerReading(f"Unsupported power unit: {unit!r}")
     return PowerConverter.convert(_finite_float(value), unit, "W")

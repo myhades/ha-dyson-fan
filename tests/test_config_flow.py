@@ -55,8 +55,11 @@ def _valid_input() -> dict[str, object]:
     }
 
 
-async def test_user_flow(hass: HomeAssistant) -> None:
+@pytest.mark.parametrize("unit", ["W", None, ""])
+async def test_user_flow(hass: HomeAssistant, unit: str | None) -> None:
     """A power sensor and four actions create a config entry."""
+    attributes = {} if unit is None else {"unit_of_measurement": unit}
+    hass.states.async_set("sensor.dyson_power", "1.2", attributes)
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
@@ -77,9 +80,9 @@ async def test_user_flow(hass: HomeAssistant) -> None:
     assert hass.states.get("button.dyson_fan_calibrate_power_table") is not None
     # Repeated writes of the same wattage arrive through state_reported and must
     # count as separate feedback samples.
-    hass.states.async_set("sensor.dyson_power", "1.2", {"unit_of_measurement": "W"})
-    hass.states.async_set("sensor.dyson_power", "1.2", {"unit_of_measurement": "W"})
-    hass.states.async_set("sensor.dyson_power", "1.2", {"unit_of_measurement": "W"})
+    hass.states.async_set("sensor.dyson_power", "1.2", attributes)
+    hass.states.async_set("sensor.dyson_power", "1.2", attributes)
+    hass.states.async_set("sensor.dyson_power", "1.2", attributes)
     await hass.async_block_till_done()
     assert hass.states.get("fan.dyson_fan").state == STATE_OFF
 

@@ -258,21 +258,29 @@ async def test_burst_wait_is_bounded_and_cancellable(
     assert stopped.is_set()
 
 
-async def test_feedback_normalizes_units_before_decoding(hass: HomeAssistant) -> None:
-    """kW works, while energy and missing units invalidate the same sensor."""
+@pytest.mark.parametrize("unit", ["W", "kW", None, "", "   "])
+@pytest.mark.parametrize("sign", [1, -1])
+async def test_feedback_normalizes_units_before_decoding(
+    hass: HomeAssistant, unit: str | None, sign: int
+) -> None:
+    """Both meter directions work; absent units mean W, not an invalid sensor."""
     entry = _entry()
     controller = DysonFanController(hass, entry, entry.data)
+    reading = sign * (0.0522 if unit == "kW" else 52.2)
+    attributes = {} if unit is None else {"unit_of_measurement": unit}
     for _ in range(3):
         controller._async_process_power_state(
-            State("sensor.dyson_power", "0.0522", {"unit_of_measurement": "kW"})
+            State("sensor.dyson_power", str(reading), attributes)
         )
     assert controller.accepted == FanState(True, 10, False)
-    for unit in ("kWh", None):
-        controller._async_process_power_state(
-            State("sensor.dyson_power", "52.2", {"unit_of_measurement": unit})
-        )
-        assert not controller.available
-        assert "Unsupported power unit" in controller.last_error
+    assert controller.available
+    # Calibration consumes these raw samples, so it must also see absolute watts.
+    assert all(sample[2] == pytest.approx(52.2) for sample in controller._raw_samples)
+    controller._async_process_power_state(
+        State("sensor.dyson_power", "52.2", {"unit_of_measurement": "kWh"})
+    )
+    assert not controller.available
+    assert "Unsupported power unit" in controller.last_error
 
 
 @pytest.mark.parametrize("interval", [0.25, 10.0])
