@@ -13,6 +13,7 @@ class DysonFanEntity:
     """Base class for entities backed by one Dyson Fan controller."""
 
     _attr_has_entity_name = True
+    _attr_should_poll = False
 
     def __init__(self, entry: DysonFanConfigEntry) -> None:
         """Initialize the entity."""
@@ -27,6 +28,7 @@ class DysonFanEntity:
 
     async def async_added_to_hass(self) -> None:
         """Subscribe after the entity has been registered with Home Assistant."""
+        await super().async_added_to_hass()
         self.async_on_remove(
             self.controller.async_add_listener(self._async_controller_updated)
         )

@@ -37,6 +37,7 @@ class DysonFeedbackFan(DysonFanEntity, FanEntity):
     def __init__(self, entry: DysonFanConfigEntry) -> None:
         """Initialize the fan."""
         super().__init__(entry)
+        self._attr_icon = entry.runtime_data.fan_icon
         self._attr_unique_id = entry.entry_id
 
     @property

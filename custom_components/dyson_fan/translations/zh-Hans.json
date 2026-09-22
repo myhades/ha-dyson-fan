@@ -11,7 +11,7 @@
           "oscillation_toggle_action": "摆风切换动作",
           "speed_up_action": "提高风速动作",
           "speed_down_action": "降低风速动作",
-          "feedback_burst_action": "临时提高上报速度动作（可选）"
+          "feedback_burst_action": "快速反馈动作（可选）"
         },
         "data_description": {
           "feedback_burst_action": "请求新的功率读数前执行，可使用任意 Home Assistant 动作。"
@@ -25,7 +25,7 @@
           "oscillation_toggle_action": "摆风切换动作",
           "speed_up_action": "提高风速动作",
           "speed_down_action": "降低风速动作",
-          "feedback_burst_action": "临时提高上报速度动作（可选）"
+          "feedback_burst_action": "快速反馈动作（可选）"
         },
         "data_description": {
           "feedback_burst_action": "请求新的功率读数前执行，可使用任意 Home Assistant 动作。"
@@ -33,7 +33,8 @@
       }
     },
     "error": {
-      "invalid_action": "请至少选择一个有效的 Home Assistant 动作。"
+      "invalid_action": "请至少选择一个有效的 Home Assistant 动作。",
+      "invalid_power_unit": "请使用 W、kW 等功率单位；无单位时按 W 处理。"
     },
     "abort": {
       "reconfigure_successful": "Dyson Fan 已成功重新配置。"
@@ -48,50 +49,52 @@
         },
         "menu_option_descriptions": {
           "control": "修改尝试次数和两次红外发送之间的间隔。",
-          "power_table": "修改用于识别各档风速和摆风状态的功率。"
+          "power_table": "修改关机和各档不摆风功率，以及统一的摆风功率增量。"
         }
       },
       "control": {
         "title": "控制行为",
         "data": {
           "max_attempts": "最大尝试次数",
-          "ir_send_interval": "红外发送间隔"
+          "ir_send_interval": "红外发送间隔",
+          "calibration_mode": "校准模式"
         },
         "data_description": {
           "max_attempts": "首次完整发送计为一次尝试。只有稳定反馈与目标不符时才会进行额外尝试。",
-          "ir_send_interval": "连续执行两个红外动作之间的时间。"
+          "ir_send_interval": "连续执行两个红外动作之间的时间。",
+          "calibration_mode": "端点模式根据 1 档和 10 档对当前曲线进行平移和缩放；完整模式会测量每个不摆风档位。"
         }
       },
       "power_table": {
         "title": "功率表",
-        "description": "输入每种风扇物理状态下的典型实测功率。",
+        "description": "依次输入摆风功率增量、关机功率和 1 至 10 档不摆风功率。",
         "data": {
+          "restore_default_power_table": "提交后恢复为内置功率表",
+          "power_oscillation_delta": "摆风功率增量",
           "power_off": "关机",
           "power_speed_1_stationary": "1 档，不摆风",
-          "power_speed_1_oscillating": "1 档，摆风",
           "power_speed_2_stationary": "2 档，不摆风",
-          "power_speed_2_oscillating": "2 档，摆风",
           "power_speed_3_stationary": "3 档，不摆风",
-          "power_speed_3_oscillating": "3 档，摆风",
           "power_speed_4_stationary": "4 档，不摆风",
-          "power_speed_4_oscillating": "4 档，摆风",
           "power_speed_5_stationary": "5 档，不摆风",
-          "power_speed_5_oscillating": "5 档，摆风",
           "power_speed_6_stationary": "6 档，不摆风",
-          "power_speed_6_oscillating": "6 档，摆风",
           "power_speed_7_stationary": "7 档，不摆风",
-          "power_speed_7_oscillating": "7 档，摆风",
           "power_speed_8_stationary": "8 档，不摆风",
-          "power_speed_8_oscillating": "8 档，摆风",
           "power_speed_9_stationary": "9 档，不摆风",
-          "power_speed_9_oscillating": "9 档，摆风",
-          "power_speed_10_stationary": "10 档，不摆风",
-          "power_speed_10_oscillating": "10 档，摆风"
+          "power_speed_10_stationary": "10 档，不摆风"
         }
       }
     },
     "error": {
-      "invalid_power_table": "功率必须随档位升高而增加，并且每档的摆风功率必须高于不摆风功率。"
+      "invalid_power_table": "功率必须随档位升高而增加，且加上摆风增量后所有值仍需低于 100 W。"
+    }
+  },
+  "selector": {
+    "calibration_mode": {
+      "options": {
+        "endpoints": "端点",
+        "full": "完整"
+      }
     }
   },
   "entity": {

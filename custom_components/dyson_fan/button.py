@@ -5,9 +5,11 @@ from __future__ import annotations
 from homeassistant.components.button import ButtonEntity
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import DysonFanConfigEntry
+from .const import DOMAIN
 from .entity import DysonFanEntity
 
 
@@ -17,6 +19,12 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the automatic calibration button."""
+    registry = er.async_get(hass)
+    obsolete_entity = registry.async_get_entity_id(
+        "button", DOMAIN, f"{entry.entry_id}_undo_calibration"
+    )
+    if obsolete_entity is not None:
+        registry.async_remove(obsolete_entity)
     async_add_entities([DysonFanCalibrationButton(entry)])
 
 

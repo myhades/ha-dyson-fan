@@ -1,0 +1,120 @@
+{
+  "title": "Dyson Ventilator",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Leistungssensor und IR-Aktionen",
+        "description": "Einen häufig aktualisierten Leistungssensor auswählen und die vier Steueraktionen einrichten. Der Ventilator bleibt nicht verfügbar, bis mehrere stabile Messwerte vorliegen.",
+        "data": {
+          "power_sensor": "Leistungssensor",
+          "power_toggle_action": "Ein/Aus umschalten",
+          "oscillation_toggle_action": "Schwenken umschalten",
+          "speed_up_action": "Stufe erhöhen",
+          "speed_down_action": "Stufe senken",
+          "feedback_burst_action": "Messrate erhöhen (optional)"
+        },
+        "data_description": {
+          "feedback_burst_action": "Wird vor dem Abruf neuer Messwerte ausgeführt. Jede Home Assistant-Aktion ist möglich."
+        }
+      },
+      "reconfigure": {
+        "title": "Sensor und Aktionen ändern",
+        "data": {
+          "power_sensor": "Leistungssensor",
+          "power_toggle_action": "Ein/Aus umschalten",
+          "oscillation_toggle_action": "Schwenken umschalten",
+          "speed_up_action": "Stufe erhöhen",
+          "speed_down_action": "Stufe senken",
+          "feedback_burst_action": "Messrate erhöhen (optional)"
+        },
+        "data_description": {
+          "feedback_burst_action": "Wird vor dem Abruf neuer Messwerte ausgeführt. Jede Home Assistant-Aktion ist möglich."
+        }
+      }
+    },
+    "error": {
+      "invalid_action": "Mindestens eine gültige Home Assistant-Aktion auswählen.",
+      "invalid_power_unit": "Eine Leistungseinheit wie W oder kW verwenden. Ohne Einheit gilt W."
+    },
+    "abort": {
+      "reconfigure_successful": "Dyson Ventilator wurde neu konfiguriert."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "menu_options": {
+          "control": "Steuerung",
+          "power_table": "Leistungstabelle"
+        },
+        "menu_option_descriptions": {
+          "control": "Versuche und IR-Sendeintervall anpassen.",
+          "power_table": "Leistungswerte und Mehrleistung beim Schwenken anpassen."
+        }
+      },
+      "control": {
+        "title": "Steuerung",
+        "data": {
+          "max_attempts": "Maximale Versuche",
+          "ir_send_interval": "IR-Sendeintervall",
+          "calibration_mode": "Kalibriermodus"
+        },
+        "data_description": {
+          "max_attempts": "Die erste vollständige Befehlsfolge zählt als ein Versuch. Weitere Versuche erfolgen nur, wenn die stabile Rückmeldung vom Ziel abweicht.",
+          "ir_send_interval": "Zeit zwischen zwei IR-Aktionen.",
+          "calibration_mode": "Endpunkte: Die aktuelle Kurve anhand der Stufen 1 und 10 verschieben und skalieren. Vollständig: Jede Stufe ohne Schwenken messen."
+        }
+      },
+      "power_table": {
+        "title": "Leistungstabelle",
+        "description": "Zuerst die Mehrleistung beim Schwenken eingeben, dann die Leistung im ausgeschalteten Zustand und für Stufe 1 bis 10 ohne Schwenken.",
+        "data": {
+          "restore_default_power_table": "Beim Speichern Standardtabelle laden",
+          "power_oscillation_delta": "Mehrleistung beim Schwenken",
+          "power_off": "Aus",
+          "power_speed_1_stationary": "Stufe 1",
+          "power_speed_2_stationary": "Stufe 2",
+          "power_speed_3_stationary": "Stufe 3",
+          "power_speed_4_stationary": "Stufe 4",
+          "power_speed_5_stationary": "Stufe 5",
+          "power_speed_6_stationary": "Stufe 6",
+          "power_speed_7_stationary": "Stufe 7",
+          "power_speed_8_stationary": "Stufe 8",
+          "power_speed_9_stationary": "Stufe 9",
+          "power_speed_10_stationary": "Stufe 10"
+        }
+      }
+    },
+    "error": {
+      "invalid_power_table": "Die Leistung muss mit jeder Stufe steigen. Auch mit Schwenken müssen alle Werte unter 100 W bleiben."
+    }
+  },
+  "selector": {
+    "calibration_mode": {
+      "options": {
+        "endpoints": "Endpunkte",
+        "full": "Vollständig"
+      }
+    }
+  },
+  "entity": {
+    "button": {
+      "calibrate_power_table": {
+        "name": "Leistungstabelle kalibrieren"
+      }
+    },
+    "sensor": {
+      "diagnostics": {
+        "name": "Diagnose",
+        "state": {
+          "initializing": "Initialisierung",
+          "idle": "Bereit",
+          "sending": "Befehle senden",
+          "waiting_feedback": "Warten auf Rückmeldung",
+          "calibrating": "Kalibrierung",
+          "error": "Fehler"
+        }
+      }
+    }
+  }
+}

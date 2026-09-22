@@ -10,12 +10,15 @@ from collections.abc import Callable, Mapping
 from contextlib import suppress
 from copy import deepcopy
 from datetime import datetime
-from statistics import median
 from time import monotonic
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
+from homeassistant.const import (
+    ATTR_UNIT_OF_MEASUREMENT,
+    STATE_UNAVAILABLE,
+    STATE_UNKNOWN,
+)
 from homeassistant.core import (
     CALLBACK_TYPE,
     Context,
@@ -41,22 +44,25 @@ from .calibration import (
     CalibrationError,
     CalibrationResult,
     build_calibrated_table,
+    build_full_calibrated_table,
 )
 from .const import (
     CALIBRATION_ENDPOINT_CHANGE_FLOOR_WATTS,
     CALIBRATION_ENDPOINT_CHANGE_RATIO,
+    CALIBRATION_FULL_STEP_FLOOR_WATTS,
+    CALIBRATION_FULL_STEP_REFERENCE_RATIO,
     CALIBRATION_INITIAL_COMMANDS,
     CALIBRATION_IR_SEND_INTERVAL_SECONDS,
     CALIBRATION_MAX_PROBES,
-    CALIBRATION_MEASUREMENT_SAMPLES,
     CALIBRATION_MEASUREMENT_SETTLE_SECONDS,
     CALIBRATION_MEASUREMENT_TIMEOUT_SECONDS,
+    CALIBRATION_OSCILLATION_DELTA_MAX_WATTS,
+    CALIBRATION_OSCILLATION_DELTA_MIN_WATTS,
     CALIBRATION_POWER_CYCLE_OFF_SECONDS,
     CALIBRATION_PROBE_COMMANDS,
     CALIBRATION_RESTORE_TIMEOUT_SECONDS,
-    CALIBRATION_STABILITY_FLOOR_WATTS,
-    CALIBRATION_STABILITY_RATIO,
     CALIBRATION_UNCHANGED_PROBES,
+    CONF_CALIBRATION_MODE,
     CONF_FEEDBACK_BURST_ACTION,
     CONF_IR_SEND_INTERVAL,
     CONF_MAX_ATTEMPTS,
@@ -65,9 +71,12 @@ from .const import (
     CONF_POWER_TOGGLE_ACTION,
     CONF_SPEED_DOWN_ACTION,
     CONF_SPEED_UP_ACTION,
+    DEFAULT_CALIBRATION_MODE,
     DEFAULT_IR_SEND_INTERVAL,
     DEFAULT_MAX_ATTEMPTS,
     DOMAIN,
+    EVENT_CALIBRATION_FINISHED,
+    FEEDBACK_BURST_TIMEOUT_SECONDS,
     FEEDBACK_TIMEOUT_SECONDS,
     PERSIST_DELAY_SECONDS,
     POST_COMMAND_SETTLE_SECONDS,
@@ -80,16 +89,35 @@ from .const import (
     STATE_WAITING_FEEDBACK,
     STORAGE_KEY_PREFIX,
     STORAGE_VERSION,
+    CalibrationMode,
 )
+from .feedback import ReportCadence, stable_window_average
 from .models import Command, DecodedPower, FanState, StableObservation, TargetState
 from .power import (
     InvalidPowerReading,
     PowerDecoder,
     PowerSignatureTable,
     StablePowerTracker,
+    merge_power_table_options,
+    power_to_watts,
+    round_power_watts,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+class _ActionLogger(logging.LoggerAdapter):
+    """Keep script execution details below the controller's outcome summaries."""
+
+    def log(self, level: int, msg: object, *args: Any, **kwargs: Any) -> None:
+        # Script errors without a traceback are expected action failures. The
+        # controller reports the final outcome once, after retries/calibration.
+        if level == logging.INFO or (
+            level == logging.ERROR and not kwargs.get("exc_info")
+        ):
+            level = logging.DEBUG
+        super().log(level, msg, *args, **kwargs)
+
 
 type ControllerListener = Callable[[], None]
 
@@ -113,6 +141,10 @@ class DysonFanController:
         """Initialize the controller."""
         self.hass = hass
         self.entry = entry
+        self._log = logging.LoggerAdapter(_LOGGER, {"config_entry_id": entry.entry_id})
+        self._action_logger = _ActionLogger(
+            logging.getLogger(f"{__name__}.actions"), {}
+        )
         registry = er.async_get(hass)
         power_sensor = er.async_resolve_entity_id(
             registry, str(entry.data[CONF_POWER_SENSOR])
@@ -126,6 +158,9 @@ class DysonFanController:
         )
         self.ir_send_interval = float(
             entry.options.get(CONF_IR_SEND_INTERVAL, DEFAULT_IR_SEND_INTERVAL)
+        )
+        self.calibration_mode = CalibrationMode(
+            entry.options.get(CONF_CALIBRATION_MODE, DEFAULT_CALIBRATION_MODE)
         )
         self.decoder = PowerDecoder(PowerSignatureTable.from_options(entry.options))
         self.tracker = StablePowerTracker(STABLE_REPORTS_REQUIRED)
@@ -173,6 +208,7 @@ class DysonFanController:
         self.calibration_finished: datetime | None = None
 
         self._source_valid = False
+        self._invalid_feedback_category: str | None = None
         self._feedback_valid = False
         self._samples_enabled = True
         self._feedback_sequence = 0
@@ -183,10 +219,22 @@ class DysonFanController:
         self._calibration_requested = False
         self._calibration_cancel = asyncio.Event()
         self._raw_sequence = 0
-        self._raw_samples: deque[tuple[int, float]] = deque(maxlen=100)
+        self._raw_samples: deque[tuple[int, float, float]] = deque(maxlen=200)
+        self._report_cadence = ReportCadence()
+        self._target_changed = asyncio.Event()
 
     async def async_start(self) -> None:
         """Load persistent data, prepare actions, and subscribe to feedback."""
+        try:
+            await self._async_start()
+        except Exception, asyncio.CancelledError:
+            # A failed or cancelled setup must not leave scripts/listeners alive
+            # or overwrite speed memory before storage has been loaded.
+            await self.async_shutdown(persist=False)
+            raise
+
+    async def _async_start(self) -> None:
+        """Validate all actions before allocating runtime resources."""
         stored = await self._store.async_load()
         if stored and isinstance(stored.get("last_speed"), int):
             speed = int(stored["last_speed"])
@@ -200,6 +248,13 @@ class DysonFanController:
                 self.hass, deepcopy(raw_sequence)
             )
 
+        validated_burst = None
+        if burst_config := self._action_configs.get(CONF_FEEDBACK_BURST_ACTION):
+            raw_sequence = _normalize_action_sequence(burst_config)
+            validated_burst = await async_validate_actions_config(
+                self.hass, deepcopy(raw_sequence)
+            )
+
         for command, validated in validated_actions.items():
             self._actions[command] = Script(
                 self.hass,
@@ -207,36 +262,34 @@ class DysonFanController:
                 f"{self.entry.title} {command.value}",
                 DOMAIN,
                 log_exceptions=True,
+                logger=self._action_logger,
             )
 
-        if burst_config := self._action_configs.get(CONF_FEEDBACK_BURST_ACTION):
-            raw_sequence = _normalize_action_sequence(burst_config)
-            validated = await async_validate_actions_config(
-                self.hass, deepcopy(raw_sequence)
-            )
+        if validated_burst is not None:
             self._feedback_burst_action = Script(
                 self.hass,
-                validated,
+                validated_burst,
                 f"{self.entry.title} feedback burst",
                 DOMAIN,
                 log_exceptions=True,
+                logger=self._action_logger,
             )
 
-        self._unsubscribers.extend(
-            (
-                async_track_state_change_event(
-                    self.hass, self.power_sensor, self._async_on_state_changed
-                ),
-                async_track_state_report_event(
-                    self.hass, self.power_sensor, self._async_on_state_reported
-                ),
+        self._unsubscribers.append(
+            async_track_state_change_event(
+                self.hass, self.power_sensor, self._async_on_state_changed
+            )
+        )
+        self._unsubscribers.append(
+            async_track_state_report_event(
+                self.hass, self.power_sensor, self._async_on_state_reported
             )
         )
 
         if current := self.hass.states.get(self.power_sensor):
             self._async_process_power_state(current)
 
-    async def async_shutdown(self) -> None:
+    async def async_shutdown(self, *, persist: bool = True) -> None:
         """Stop work, unsubscribe listeners, and persist remembered speed."""
         self._shutting_down = True
         for unsubscribe in self._unsubscribers:
@@ -259,7 +312,8 @@ class DysonFanController:
         if self._feedback_burst_action is not None:
             await self._feedback_burst_action.async_unload()
             self._feedback_burst_action = None
-        await self._store.async_save({"last_speed": self.last_speed})
+        if persist:
+            await self._store.async_save(self._storage_data())
 
     @callback
     def async_add_listener(self, listener: ControllerListener) -> CALLBACK_TYPE:
@@ -369,6 +423,7 @@ class DysonFanController:
         # Stop normal convergence after any IR action already in progress.
         self.target = restore_target
         self.target_revision += 1
+        self._target_changed.set()
         revision = self.target_revision
         self._wake_event.set()
         self._notify_listeners()
@@ -391,8 +446,16 @@ class DysonFanController:
             self._calibration_cancel.set()
         self.target = target
         self.target_revision += 1
+        self._target_changed.set()
         if context is not None:
             self._context = context
+        self._log.debug(
+            "[%s] Target revision %s: %s (previous feedback: %s)",
+            self.entry.entry_id,
+            self.target_revision,
+            target,
+            self.accepted,
+        )
         self.last_error = None
         self._wake_event.set()
         self._notify_listeners()
@@ -444,6 +507,15 @@ class DysonFanController:
                     break
                 self.attempt_count = attempt
                 self.last_error = None
+                self._log.debug(
+                    "[%s] Control revision %s, attempt %s/%s; target=%s, assumed=%s",
+                    self.entry.entry_id,
+                    revision,
+                    attempt,
+                    self.max_attempts,
+                    self.target,
+                    self.supposed,
+                )
                 self._notify_listeners()
 
                 planned = await self._async_execute_target(revision)
@@ -486,6 +558,27 @@ class DysonFanController:
             self._samples_enabled = True
             if completed and revision == self.target_revision:
                 self.handled_revision = revision
+                if self.phase == STATE_ERROR:
+                    # Restoration belongs to the calibration transaction; report
+                    # its failure there instead of repeating this warning.
+                    self._log.log(
+                        logging.DEBUG if self.calibrating else logging.WARNING,
+                        "[%s] Control failed: %s; target=%s, feedback=%s, "
+                        "attempts=%s/%s",
+                        self.entry.entry_id,
+                        self.last_error,
+                        self.target,
+                        self.accepted,
+                        self.attempt_count,
+                        self.max_attempts,
+                    )
+                else:
+                    self._log.debug(
+                        "[%s] Control revision %s confirmed: %s",
+                        self.entry.entry_id,
+                        revision,
+                        self.accepted,
+                    )
             self._notify_listeners()
 
             if revision == self.target_revision:
@@ -581,22 +674,61 @@ class DysonFanController:
             return False
 
         self.last_command = command
+        self._log.debug(
+            "[%s] Running IR action %s; revision=%s, calibration_step=%s",
+            self.entry.entry_id,
+            command.value,
+            revision,
+            self.calibration_step if self.calibrating else None,
+        )
         self.last_operation = dt_util.utcnow()
         self._notify_listeners()
         try:
             await self._actions[command].async_run(context=self._context)
         except (HomeAssistantError, RuntimeError, ValueError) as err:
             self.last_error = f"action_error: {err}"
-            _LOGGER.warning("%s action failed: %s", command.value, err)
+            self._log.debug(
+                "[%s] IR action %s failed: %s", self.entry.entry_id, command.value, err
+            )
             return False
         finally:
             self._last_ir_sent_monotonic = monotonic()
         # The action may have transmitted before a newer target arrived. Report that
         # it ran so the caller updates supposed state, then re-plan at the next command
         # boundary using the new revision.
+        self._log.debug(
+            "[%s] IR action %s finished (hardware receipt not yet confirmed)",
+            self.entry.entry_id,
+            command.value,
+        )
         return True
 
     async def _async_calibrate(
+        self, restore_target: TargetState, revision: int
+    ) -> None:
+        """Ensure every started calibration emits exactly one completion event."""
+        try:
+            await self._async_calibrate_and_restore(restore_target, revision)
+        except asyncio.CancelledError:
+            if self.calibration_result in ("success", "failed"):
+                self.calibration_result += "_restore_cancelled"
+            else:
+                self.calibration_result = "cancelled"
+            raise
+        except Exception as err:
+            self.calibration_result = (
+                "success_restore_failed"
+                if self.calibration_result == "success"
+                else "failed"
+            )
+            self.calibration_error = f"unexpected_error: {err}"
+            self._log.exception(
+                "[%s] Unexpected calibration task failure", self.entry.entry_id
+            )
+        finally:
+            self._finish_calibration()
+
+    async def _async_calibrate_and_restore(
         self, restore_target: TargetState, revision: int
     ) -> None:
         """Run calibration transactionally, then restore or honor a new target."""
@@ -608,12 +740,17 @@ class DysonFanController:
                     await previous_worker
             self._check_calibration_revision(revision)
 
+            self._log.info(
+                "Calibration started for %s; current power table: %s",
+                self.entry.entry_id,
+                self.decoder.table.as_options(),
+            )
             self.handled_revision = revision
             self._samples_enabled = False
             self.tracker.reset()
             result = await self._async_perform_calibration(revision)
             self._check_calibration_revision(revision)
-            self._apply_calibration_result(result)
+            await self._async_apply_calibration_result(result)
             self.calibration_result = "success"
         except CalibrationCancelled:
             user_cancelled = True
@@ -622,11 +759,17 @@ class DysonFanController:
         except CalibrationError as err:
             self.calibration_result = "failed"
             self.calibration_error = str(err)
-            _LOGGER.warning("Automatic power-table calibration failed: %s", err)
-        except (HomeAssistantError, RuntimeError, ValueError) as err:
+            self._log.warning(
+                "[%s] Automatic power-table calibration failed: %s",
+                self.entry.entry_id,
+                err,
+            )
+        except (HomeAssistantError, RuntimeError, ValueError, OSError) as err:
             self.calibration_result = "failed"
             self.calibration_error = f"unexpected_error: {err}"
-            _LOGGER.exception("Unexpected automatic calibration failure")
+            self._log.exception(
+                "[%s] Unexpected automatic calibration failure", self.entry.entry_id
+            )
         finally:
             self._calibration_requested = False
             self._samples_enabled = True
@@ -647,7 +790,12 @@ class DysonFanController:
                 else:
                     self.calibration_result = "cancelled"
                     self.calibration_error = None
-            except (CalibrationError, TimeoutError) as err:
+            except (CalibrationError, TimeoutError, HomeAssistantError) as err:
+                self._log.warning(
+                    "[%s] Calibration state restoration failed: %s",
+                    self.entry.entry_id,
+                    err,
+                )
                 suffix = f"restore_failed: {err}"
                 self.calibration_error = (
                     f"{self.calibration_error}; {suffix}"
@@ -657,20 +805,41 @@ class DysonFanController:
                 if self.calibration_result == "success":
                     self.calibration_result = "success_restore_failed"
 
-        self.calibrating = False
-        self.calibration_step = "finished"
-        self.calibration_finished = dt_util.utcnow()
         if user_cancelled:
             self._ensure_worker()
         elif self.phase != STATE_ERROR:
             self.phase = STATE_IDLE
+
+    def _finish_calibration(self) -> None:
+        """Publish the final result after restoration, without a diagnostics sensor."""
+        self.calibrating = False
+        self.calibration_step = "finished"
+        self.calibration_finished = dt_util.utcnow()
+        registry = er.async_get(self.hass)
+        entity_id = registry.async_get_entity_id("fan", DOMAIN, self.entry.entry_id)
+        entity = registry.async_get(entity_id) if entity_id else None
+        self.hass.bus.async_fire(
+            EVENT_CALIBRATION_FINISHED,
+            {
+                "config_entry_id": self.entry.entry_id,
+                "device_id": entity.device_id if entity else None,
+                "entity_id": entity_id,
+                "mode": self.calibration_mode.value,
+                "result": self.calibration_result,
+                "error": self.calibration_error,
+                "started_at": _as_iso(self.calibration_started),
+                "finished_at": _as_iso(self.calibration_finished),
+            },
+            context=self._context,
+        )
         self._notify_listeners()
 
     async def _async_perform_calibration(self, revision: int) -> CalibrationResult:
-        """Normalize the fan and measure its stationary endpoint powers."""
+        """Measure shared calibration data, then run the configured strategy."""
         supposed = self.supposed
         if supposed is None:
             raise CalibrationError("Fan state is not initialized")
+        reference_table = self.decoder.table
 
         self.calibration_step = "normalizing_off"
         self._notify_listeners()
@@ -682,17 +851,21 @@ class DysonFanController:
         await asyncio.sleep(CALIBRATION_POWER_CYCLE_OFF_SECONDS)
         self._check_calibration_revision(revision)
 
-        off_watts = await self._async_measure_stable_power("off", revision)
         off_boundary = (
             self.decoder.table.off + self.decoder.table.speeds[(1, False)]
         ) / 2
+        off_watts = await self._async_measure_stable_power(
+            "off", revision, accept=lambda watts: watts < off_boundary
+        )
         if off_watts >= off_boundary:
             raise CalibrationError("The fan did not reach the expected off state")
 
         self.calibration_step = "powering_on"
         self._notify_listeners()
         await self._async_calibration_send(Command.POWER_TOGGLE, revision)
-        power_on_watts = await self._async_measure_stable_power("power_on", revision)
+        power_on_watts = await self._async_measure_stable_power(
+            "power_on", revision, accept=lambda watts: watts - off_watts >= 0.5
+        )
         if power_on_watts - off_watts < 0.5:
             raise CalibrationError("The fan did not turn on after the power command")
         supposed = self.supposed
@@ -706,14 +879,139 @@ class DysonFanController:
             Command.SPEED_DOWN, "speed_1", revision
         )
         self.supposed = FanState(True, 1, False)
+
+        self.calibration_step = "measuring_oscillation_increment"
+        self._notify_listeners()
+        await self._async_calibration_send(Command.OSCILLATION_TOGGLE, revision)
+        oscillating_speed_1 = await self._async_measure_stable_power(
+            "speed_1_oscillating",
+            revision,
+            accept=lambda watts: (
+                watts - speed_1_watts >= CALIBRATION_OSCILLATION_DELTA_MIN_WATTS
+            ),
+        )
+        oscillation_delta = round_power_watts(oscillating_speed_1 - speed_1_watts)
+        if not (
+            CALIBRATION_OSCILLATION_DELTA_MIN_WATTS
+            <= oscillation_delta
+            <= CALIBRATION_OSCILLATION_DELTA_MAX_WATTS
+        ):
+            raise CalibrationError("The measured oscillation increment is unreasonable")
+        self.calibration_measurements["oscillation_delta"] = oscillation_delta
+
+        # A full power cycle is the only trusted way to clear oscillation before
+        # either calibration mode starts changing speed.
+        await self._async_calibration_send(Command.POWER_TOGGLE, revision)
+        self.calibration_step = "waiting_oscillation_reset"
+        self._notify_listeners()
+        await asyncio.sleep(CALIBRATION_POWER_CYCLE_OFF_SECONDS)
+        self._check_calibration_revision(revision)
+        reset_off_watts = await self._async_measure_stable_power(
+            "off_after_oscillation", revision, accept=lambda watts: watts < off_boundary
+        )
+        if reset_off_watts >= off_boundary:
+            raise CalibrationError(
+                "The fan did not turn off after measuring oscillation"
+            )
+
+        await self._async_calibration_send(Command.POWER_TOGGLE, revision)
+        reset_speed_1_watts = await self._async_measure_stable_power(
+            "speed_1_after_reset",
+            revision,
+            accept=lambda watts: (
+                abs(watts - speed_1_watts)
+                <= self._calibration_threshold(watts, speed_1_watts)
+            ),
+        )
+        if abs(reset_speed_1_watts - speed_1_watts) > self._calibration_threshold(
+            reset_speed_1_watts, speed_1_watts
+        ):
+            raise CalibrationError("Speed 1 changed unexpectedly after the power cycle")
+        self.supposed = FanState(True, 1, False)
+
+        if self.calibration_mode is CalibrationMode.FULL:
+            return await self._async_perform_full_calibration(
+                revision,
+                off_watts,
+                reset_speed_1_watts,
+                oscillation_delta,
+                reference_table,
+            )
+
         speed_10_watts = await self._async_find_endpoint(
             Command.SPEED_UP, "speed_10", revision
         )
         self.supposed = FanState(True, 10, False)
         return build_calibrated_table(
             off_watts,
-            speed_1_watts,
+            reset_speed_1_watts,
             speed_10_watts,
+            oscillation_delta=oscillation_delta,
+            reference_table=reference_table,
+        )
+
+    async def _async_perform_full_calibration(
+        self,
+        revision: int,
+        off_watts: float,
+        speed_1_watts: float,
+        oscillation_delta: float,
+        reference_table: PowerSignatureTable,
+    ) -> CalibrationResult:
+        """Measure every stationary speed, stopping after speed 10."""
+        reference_stationary = [
+            reference_table.speeds[(speed, False)] for speed in range(1, 11)
+        ]
+        stationary = {1: speed_1_watts}
+        for speed in range(2, 11):
+            expected_step = (
+                reference_stationary[speed - 1] - reference_stationary[speed - 2]
+            )
+            minimum_step = max(
+                CALIBRATION_FULL_STEP_FLOOR_WATTS,
+                expected_step * CALIBRATION_FULL_STEP_REFERENCE_RATIO,
+            )
+            minimum_step = round_power_watts(minimum_step)
+            self._log.debug(
+                "[%s] Calibrating speed %s: previous=%.3f W, minimum_increase=%.3f W",
+                self.entry.entry_id,
+                speed,
+                stationary[speed - 1],
+                minimum_step,
+            )
+            self.calibration_measurements[f"speed_{speed}_minimum_step"] = minimum_step
+            self.calibration_step = f"speed_{speed}_command"
+            self._notify_listeners()
+            await self._async_calibration_send(Command.SPEED_UP, revision)
+            measured = await self._async_measure_stable_power(
+                f"speed_{speed}",
+                revision,
+                accept=lambda watts, minimum=stationary[speed - 1] + minimum_step: (
+                    watts >= minimum
+                ),
+            )
+            if measured - stationary[speed - 1] < minimum_step:
+                raise CalibrationError(
+                    f"Speed {speed} did not increase power by at least "
+                    f"{minimum_step:.2f} W"
+                )
+            stationary[speed] = measured
+
+        self.supposed = FanState(True, 10, False)
+        return build_full_calibrated_table(
+            off_watts,
+            stationary,
+            oscillation_delta,
+            reference_table=reference_table,
+        )
+
+    @staticmethod
+    def _calibration_threshold(left: float, right: float) -> float:
+        """Return the shared threshold for comparing stable measurements."""
+        return max(
+            CALIBRATION_ENDPOINT_CHANGE_FLOOR_WATTS,
+            abs(left) * CALIBRATION_ENDPOINT_CHANGE_RATIO,
+            abs(right) * CALIBRATION_ENDPOINT_CHANGE_RATIO,
         )
 
     async def _async_find_endpoint(
@@ -735,11 +1033,7 @@ class DysonFanController:
             measured = await self._async_measure_stable_power(
                 f"{label}_probe_{probe}", revision
             )
-            threshold = max(
-                CALIBRATION_ENDPOINT_CHANGE_FLOOR_WATTS,
-                abs(current) * CALIBRATION_ENDPOINT_CHANGE_RATIO,
-                abs(measured) * CALIBRATION_ENDPOINT_CHANGE_RATIO,
-            )
+            threshold = self._calibration_threshold(current, measured)
             change = measured - current
             moving_opposite = (
                 command is Command.SPEED_DOWN and change > threshold
@@ -761,10 +1055,6 @@ class DysonFanController:
 
     async def _async_calibration_send(self, command: Command, revision: int) -> None:
         """Send one calibration command and retain every transmitted state step."""
-        if command is Command.OSCILLATION_TOGGLE:
-            raise CalibrationError(
-                "Calibration must not transmit the oscillation command"
-            )
         self._check_calibration_revision(revision)
         if self._last_ir_sent_monotonic is not None:
             calibration_interval = max(
@@ -777,7 +1067,8 @@ class DysonFanController:
                 await asyncio.sleep(remaining)
         self._check_calibration_revision(revision)
         if not await self._async_send_command(command, revision):
-            raise CalibrationCancelled
+            self._check_calibration_revision(revision)
+            raise CalibrationError(self.last_error or "Infrared action failed")
 
         supposed = self.supposed
         if supposed is not None:
@@ -795,14 +1086,32 @@ class DysonFanController:
                     else None
                 )
                 supposed = FanState(True, speed, supposed.oscillating)
+            elif command is Command.OSCILLATION_TOGGLE and supposed.power:
+                supposed = FanState(
+                    True,
+                    supposed.speed,
+                    not supposed.oscillating,
+                )
             self.supposed = supposed
 
         self.phase = STATE_CALIBRATING
         self._check_calibration_revision(revision)
 
-    async def _async_measure_stable_power(self, label: str, revision: int) -> float:
-        """Measure a stable median from fresh raw sensor reports."""
+    async def _async_measure_stable_power(
+        self,
+        label: str,
+        revision: int,
+        *,
+        accept: Callable[[float], bool] | None = None,
+    ) -> float:
+        """Measure an adaptive, outlier-filtered average from fresh reports."""
         self.calibration_step = f"measuring_{label}"
+        self._log.debug(
+            "[%s] Calibration measurement started: %s; report_interval=%s s",
+            self.entry.entry_id,
+            label,
+            self._report_cadence.interval,
+        )
         self.phase = STATE_CALIBRATING
         await self._async_run_feedback_burst()
         self._notify_listeners()
@@ -810,28 +1119,42 @@ class DysonFanController:
         self._check_calibration_revision(revision)
 
         start_sequence = self._raw_sequence
+        samples: list[tuple[float, float]] = []
+        measured: float | None = None
         self._wake_event.clear()
         try:
-            async with asyncio.timeout(CALIBRATION_MEASUREMENT_TIMEOUT_SECONDS):
+            started = self.hass.loop.time()
+            async with asyncio.timeout(None) as timeout:
                 while True:
+                    timeout.reschedule(
+                        started
+                        + self._report_cadence.timeout(
+                            CALIBRATION_MEASUREMENT_TIMEOUT_SECONDS, 5
+                        )
+                    )
                     self._check_calibration_revision(revision)
                     if not self._source_valid:
                         raise CalibrationError("Power sensor is unavailable or invalid")
                     samples = [
-                        watts
-                        for sequence, watts in self._raw_samples
+                        (timestamp, watts)
+                        for sequence, timestamp, watts in self._raw_samples
                         if sequence > start_sequence
-                    ][-CALIBRATION_MEASUREMENT_SAMPLES:]
-                    if len(samples) == CALIBRATION_MEASUREMENT_SAMPLES:
-                        measured = float(median(samples))
-                        tolerance = max(
-                            CALIBRATION_STABILITY_FLOOR_WATTS,
-                            abs(measured) * CALIBRATION_STABILITY_RATIO,
+                    ]
+                    measured = stable_window_average(samples)
+                    if measured is not None and (accept is None or accept(measured)):
+                        self._log.debug(
+                            "[%s] Calibration measurement %s: %.3f W; reports=%s, "
+                            "elapsed=%.2f s, report_interval=%s s",
+                            self.entry.entry_id,
+                            label,
+                            measured,
+                            self._raw_sequence - start_sequence,
+                            self.hass.loop.time() - started,
+                            self._report_cadence.interval,
                         )
-                        if max(samples) - min(samples) <= tolerance:
-                            self.calibration_measurements[label] = measured
-                            self._notify_listeners()
-                            return measured
+                        self.calibration_measurements[label] = measured
+                        self._notify_listeners()
+                        return measured
 
                     observed_sequence = self._raw_sequence
                     self._wake_event.clear()
@@ -839,14 +1162,30 @@ class DysonFanController:
                         continue
                     await self._wake_event.wait()
         except TimeoutError as err:
+            self._log.debug(
+                "[%s] Calibration measurement %s timed out: reason=%s, reports=%s, "
+                "elapsed=%.2f s, report_interval=%s s, latest_watts=%s, "
+                "stable_average=%s",
+                self.entry.entry_id,
+                label,
+                "no_reports"
+                if not samples
+                else "unstable"
+                if measured is None
+                else "acceptance_not_met",
+                self._raw_sequence - start_sequence,
+                self.hass.loop.time() - started,
+                self._report_cadence.interval,
+                samples[-1][1] if samples else None,
+                measured,
+            )
             raise CalibrationError(
                 f"Timed out waiting for stable power at {label}"
             ) from err
 
-    def _apply_calibration_result(self, result: CalibrationResult) -> None:
+    async def _async_apply_calibration_result(self, result: CalibrationResult) -> None:
         """Commit a fully validated calibration to options and runtime state."""
-        options = dict(self.entry.options)
-        options.update(result.table.as_options())
+        options = merge_power_table_options(self.entry.options, result.table)
         self.hass.config_entries.async_update_entry(self.entry, options=options)
         self.decoder = PowerDecoder(result.table)
         self.calibration_scale = result.scale
@@ -860,6 +1199,11 @@ class DysonFanController:
         )
         self.supposed = FanState(True, 10, False)
         self._remember_speed(10)
+        self._log.info(
+            "Calibration succeeded for %s; new power table: %s",
+            self.entry.entry_id,
+            result.table.as_options(),
+        )
 
     async def _async_restore_after_calibration(
         self, restore_target: TargetState
@@ -867,6 +1211,15 @@ class DysonFanController:
         """Restore physical state, including the fan's remembered off speed."""
         if self._calibration_cancel.is_set():
             raise CalibrationCancelled
+
+        # An action may transmit before raising. Confirm physical state before
+        # planning relative commands with the active (old or new) power table.
+        revision = self.target_revision
+        feedback = await self._async_wait_for_feedback(revision)
+        self._check_calibration_revision(revision)
+        if feedback is None:
+            raise CalibrationError("No fresh feedback available for restoration")
+        self.supposed = feedback
 
         if not restore_target.power and restore_target.speed is not None:
             await self._async_restore_target(
@@ -882,7 +1235,15 @@ class DysonFanController:
         if worker is None:
             raise CalibrationError("Unable to start restoration")
         try:
-            async with asyncio.timeout(CALIBRATION_RESTORE_TIMEOUT_SECONDS):
+            # Restoration may need two feedback windows on a first power-on.
+            async with asyncio.timeout(
+                max(
+                    CALIBRATION_RESTORE_TIMEOUT_SECONDS,
+                    self._report_cadence.timeout(FEEDBACK_TIMEOUT_SECONDS, 3) * 2
+                    + 12 * self.ir_send_interval
+                    + FEEDBACK_BURST_TIMEOUT_SECONDS * 3,
+                )
+            ):
                 await worker
         except TimeoutError:
             if not worker.done():
@@ -918,14 +1279,29 @@ class DysonFanController:
         self.tracker.reset()
         self.stable_report_count = 0
         start_sequence = self._feedback_sequence
+        start_raw_sequence = self._raw_sequence
         self._samples_enabled = True
         self._wake_event.clear()
         self._notify_listeners()
 
         try:
-            async with asyncio.timeout(FEEDBACK_TIMEOUT_SECONDS):
+            started = self.hass.loop.time()
+            async with asyncio.timeout(None) as timeout:
                 while revision == self.target_revision:
+                    timeout.reschedule(
+                        started
+                        + self._report_cadence.timeout(
+                            FEEDBACK_TIMEOUT_SECONDS, STABLE_REPORTS_REQUIRED
+                        )
+                    )
                     if self._feedback_sequence > start_sequence:
+                        self._log.debug(
+                            "[%s] Feedback confirmed: %s; elapsed=%.2f s, reports=%s",
+                            self.entry.entry_id,
+                            self._latest_feedback,
+                            self.hass.loop.time() - started,
+                            self._raw_sequence - start_raw_sequence,
+                        )
                         return self._latest_feedback
                     self._wake_event.clear()
                     if revision != self.target_revision:
@@ -934,6 +1310,19 @@ class DysonFanController:
                         return self._latest_feedback
                     await self._wake_event.wait()
         except TimeoutError:
+            self._log.debug(
+                "[%s] Feedback timed out: elapsed=%.2f s, reports=%s, "
+                "report_interval=%s s, stable_reports=%s/%s, "
+                "latest=%s, source_valid=%s",
+                self.entry.entry_id,
+                self.hass.loop.time() - started,
+                self._raw_sequence - start_raw_sequence,
+                self._report_cadence.interval,
+                self.stable_report_count,
+                STABLE_REPORTS_REQUIRED,
+                self.last_decoded,
+                self._source_valid,
+            )
             return None
         finally:
             self._samples_enabled = True
@@ -943,11 +1332,41 @@ class DysonFanController:
         """Run an optional action that temporarily accelerates feedback."""
         if self._feedback_burst_action is None:
             return
+        self._log.debug("[%s] Requesting feedback burst", self.entry.entry_id)
+        self._target_changed.clear()
+        action = asyncio.create_task(
+            self._feedback_burst_action.async_run(context=self._context)
+        )
+        superseded = asyncio.create_task(self._target_changed.wait())
         try:
-            await self._feedback_burst_action.async_run(context=self._context)
+            done, _ = await asyncio.wait(
+                (action, superseded),
+                timeout=FEEDBACK_BURST_TIMEOUT_SECONDS,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if action in done:
+                await action
+                self._log.debug(
+                    "[%s] Feedback burst action finished", self.entry.entry_id
+                )
+            elif not done:
+                self._log.debug("[%s] Feedback burst timed out", self.entry.entry_id)
+            else:
+                self._log.debug(
+                    "[%s] Feedback burst superseded by a new target",
+                    self.entry.entry_id,
+                )
         except (HomeAssistantError, RuntimeError, ValueError) as err:
             # Burst is an optimization; losing it must never block normal feedback.
-            _LOGGER.debug("Unable to request power feedback burst: %s", err)
+            self._log.debug(
+                "[%s] Unable to request power feedback burst: %s",
+                self.entry.entry_id,
+                err,
+            )
+        finally:
+            action.cancel()
+            superseded.cancel()
+            await asyncio.gather(action, superseded, return_exceptions=True)
 
     @callback
     def _async_on_state_changed(self, event: Event[EventStateChangedData]) -> None:
@@ -970,7 +1389,11 @@ class DysonFanController:
             self._async_mark_invalid_feedback(f"power_sensor_{state.state}")
             return
         try:
-            decoded = self.decoder.decode(state.state)
+            decoded = self.decoder.decode(
+                power_to_watts(
+                    state.state, state.attributes.get(ATTR_UNIT_OF_MEASUREMENT)
+                )
+            )
         except InvalidPowerReading as err:
             self._async_mark_invalid_feedback(str(err))
             return
@@ -978,7 +1401,9 @@ class DysonFanController:
         self._source_valid = True
         self.last_decoded = decoded
         self._raw_sequence += 1
-        self._raw_samples.append((self._raw_sequence, decoded.watts))
+        timestamp = monotonic()
+        self._raw_samples.append((self._raw_sequence, timestamp, decoded.watts))
+        self._report_cadence.add(timestamp)
         self._wake_event.set()
         if not self._samples_enabled:
             self._notify_listeners()
@@ -1001,6 +1426,22 @@ class DysonFanController:
             speed=speed,
             oscillating=decoded_state.oscillating if decoded_state.power else False,
         )
+        if self._invalid_feedback_category is not None:
+            self._log.info(
+                "[%s] Power feedback recovered: sensor=%s, state=%s",
+                self.entry.entry_id,
+                self.power_sensor,
+                accepted,
+            )
+            self._invalid_feedback_category = None
+        if self.accepted != accepted:
+            self._log.debug(
+                "[%s] Observed fan state changed: %s -> %s (%.3f W)",
+                self.entry.entry_id,
+                self.accepted,
+                accepted,
+                observation.decoded.watts,
+            )
         self.accepted = accepted
         self.last_stable = observation
         self.last_confirmation = dt_util.utcnow()
@@ -1029,6 +1470,20 @@ class DysonFanController:
     @callback
     def _async_mark_invalid_feedback(self, reason: str) -> None:
         """Make entities unavailable until stable valid reports return."""
+        category = reason.split(":", 1)[0]
+        if reason.startswith("Power reading ") and "safety limit" in reason:
+            category = "power_out_of_range"
+        if category != self._invalid_feedback_category:
+            self._log.log(
+                logging.DEBUG
+                if category in ("power_sensor_unknown", "power_sensor_unavailable")
+                else logging.WARNING,
+                "[%s] Invalid power feedback from %s: %s",
+                self.entry.entry_id,
+                self.power_sensor,
+                reason,
+            )
+            self._invalid_feedback_category = category
         self._source_valid = False
         self._feedback_valid = False
         self.available = False
@@ -1044,9 +1499,11 @@ class DysonFanController:
         if speed is None or not 1 <= speed <= 10 or speed == self.last_speed:
             return
         self.last_speed = speed
-        self._store.async_delay_save(
-            lambda: {"last_speed": self.last_speed}, PERSIST_DELAY_SECONDS
-        )
+        self._store.async_delay_save(self._storage_data, PERSIST_DELAY_SECONDS)
+
+    def _storage_data(self) -> dict[str, Any]:
+        """Persist the last remembered speed."""
+        return {"last_speed": self.last_speed}
 
     @callback
     def _target_base(self) -> TargetState:
@@ -1094,6 +1551,8 @@ class DysonFanController:
             "calibration_offset": self.calibration_offset,
             "calibration_started": _as_iso(self.calibration_started),
             "calibration_finished": _as_iso(self.calibration_finished),
+            "calibration_mode": self.calibration_mode,
+            "report_interval": self._report_cadence.interval,
             "source_valid": self._source_valid,
             "feedback_valid": self._feedback_valid,
             "during_attempt": self.during_attempt,

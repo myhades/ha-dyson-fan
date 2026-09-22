@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import pytest
 
-from custom_components.dyson_fan.const import DEFAULT_POWER_SIGNATURES
+from custom_components.dyson_fan.const import (
+    CONF_POWER_OSCILLATION_DELTA,
+    DEFAULT_POWER_SIGNATURES,
+    power_signature_key,
+)
 from custom_components.dyson_fan.models import FanState
 from custom_components.dyson_fan.power import (
     InvalidPowerReading,
     PowerDecoder,
     PowerSignatureTable,
     StablePowerTracker,
+    power_to_watts,
 )
 
 
@@ -20,17 +25,50 @@ def decoder() -> PowerDecoder:
     return PowerDecoder(PowerSignatureTable.from_options({}))
 
 
-@pytest.mark.parametrize(("speed", "oscillating"), DEFAULT_POWER_SIGNATURES.keys())
-def test_exact_signatures(decoder: PowerDecoder, speed: int, oscillating: bool) -> None:
+def test_exact_signatures(decoder: PowerDecoder) -> None:
     """Every built-in signature maps back to its physical state."""
-    watts = DEFAULT_POWER_SIGNATURES[(speed, oscillating)]
-    assert decoder.decode(watts).state == FanState(True, speed, oscillating)
+    table = PowerSignatureTable.from_options({})
+    for (speed, oscillating), watts in table.speeds.items():
+        assert decoder.decode(watts).state == FanState(True, speed, oscillating)
+
+
+def test_legacy_oscillation_values_become_one_median_increment() -> None:
+    """Existing 21-state tables migrate without favoring one noisy speed."""
+    options: dict[str, float] = {}
+    for (speed, oscillating), watts in DEFAULT_POWER_SIGNATURES.items():
+        options[power_signature_key(speed, oscillating)] = watts
+
+    table = PowerSignatureTable.from_options(options)
+
+    assert table.oscillation_delta == 2.9
+    assert table.as_options()[CONF_POWER_OSCILLATION_DELTA] == 2.9
+    assert all(
+        table.speeds[(speed, True)] - table.speeds[(speed, False)] == pytest.approx(2.9)
+        for speed in range(1, 11)
+    )
 
 
 def test_off_and_negative_meter_direction(decoder: PowerDecoder) -> None:
     """Off decodes correctly and reversed meters are treated as absolute power."""
     assert decoder.decode(1.2).state == FanState(False, None, False)
     assert decoder.decode(-18.2).state == FanState(True, 5, False)
+
+
+@pytest.mark.parametrize("unit", ["W", "kW", None, "", "   "])
+@pytest.mark.parametrize("sign", [1, -1])
+def test_units_and_signs_preserve_all_power_states(
+    decoder: PowerDecoder, unit: str | None, sign: int
+) -> None:
+    """Every off/speed/oscillation signature is equivalent in either direction."""
+    divisor = 1000 if unit == "kW" else 1
+    table = decoder.table
+    for watts in [table.off, *table.speeds.values()]:
+        normalized = power_to_watts(sign * watts / divisor, unit)
+        decoded = decoder.decode(normalized)
+        assert decoded.state == decoder.decode(watts).state
+        assert decoded.watts == pytest.approx(watts)
+    with pytest.raises(InvalidPowerReading, match="safety limit"):
+        decoder.decode(power_to_watts(sign * 100.1 / divisor, unit))
 
 
 @pytest.mark.parametrize("value", ["unknown", None, float("nan"), 100.1, -500])

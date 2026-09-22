@@ -10,6 +10,7 @@ from uuid import uuid4
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigFlowResult
+from homeassistant.const import ATTR_UNIT_OF_MEASUREMENT
 from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.script import async_validate_actions_config
@@ -20,19 +21,26 @@ from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
 )
 
 from .const import (
     ACTION_KEYS,
+    CONF_CALIBRATION_MODE,
     CONF_FEEDBACK_BURST_ACTION,
     CONF_IR_SEND_INTERVAL,
     CONF_MAX_ATTEMPTS,
     CONF_OSCILLATION_TOGGLE_ACTION,
     CONF_POWER_OFF,
+    CONF_POWER_OSCILLATION_DELTA,
     CONF_POWER_SENSOR,
     CONF_POWER_TOGGLE_ACTION,
+    CONF_RESTORE_DEFAULT_POWER_TABLE,
     CONF_SPEED_DOWN_ACTION,
     CONF_SPEED_UP_ACTION,
+    DEFAULT_CALIBRATION_MODE,
     DEFAULT_IR_SEND_INTERVAL,
     DEFAULT_MAX_ATTEMPTS,
     DEFAULT_NAME,
@@ -40,9 +48,15 @@ from .const import (
     MAX_IR_SEND_INTERVAL,
     MIN_IR_SEND_INTERVAL,
     SPEED_COUNT,
+    CalibrationMode,
     power_signature_key,
 )
-from .power import PowerSignatureTable
+from .power import (
+    InvalidPowerReading,
+    PowerSignatureTable,
+    merge_power_table_options,
+    power_to_watts,
+)
 
 
 def _configuration_schema(suggested: dict[str, Any] | None = None) -> vol.Schema:
@@ -73,6 +87,11 @@ async def _async_validate_actions(
 ) -> dict[str, str]:
     """Validate every user-selected HA action sequence."""
     errors: dict[str, str] = {}
+    if state := hass.states.get(user_input[CONF_POWER_SENSOR]):
+        try:
+            power_to_watts(0, state.attributes.get(ATTR_UNIT_OF_MEASUREMENT))
+        except InvalidPowerReading:
+            errors[CONF_POWER_SENSOR] = "invalid_power_unit"
     for key in ACTION_KEYS:
         value = user_input.get(key)
         sequence = [value] if isinstance(value, dict) else value
@@ -98,7 +117,7 @@ async def _async_validate_actions(
 class DysonFanConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle Dyson Fan setup and reconfiguration."""
 
-    VERSION = 2
+    VERSION = 3
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -115,6 +134,7 @@ class DysonFanConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     options={
                         CONF_MAX_ATTEMPTS: DEFAULT_MAX_ATTEMPTS,
                         CONF_IR_SEND_INTERVAL: DEFAULT_IR_SEND_INTERVAL,
+                        CONF_CALIBRATION_MODE: DEFAULT_CALIBRATION_MODE,
                     },
                 )
 
@@ -206,6 +226,20 @@ class DysonFanOptionsFlow(config_entries.OptionsFlowWithReload):
                         mode=NumberSelectorMode.BOX,
                     )
                 ),
+                vol.Required(
+                    CONF_CALIBRATION_MODE,
+                    default=str(
+                        self.config_entry.options.get(
+                            CONF_CALIBRATION_MODE, DEFAULT_CALIBRATION_MODE
+                        )
+                    ),
+                ): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[mode.value for mode in CalibrationMode],
+                        mode=SelectSelectorMode.DROPDOWN,
+                        translation_key="calibration_mode",
+                    )
+                ),
             }
         )
         return self.async_show_form(step_id="control", data_schema=schema)
@@ -213,36 +247,58 @@ class DysonFanOptionsFlow(config_entries.OptionsFlowWithReload):
     async def async_step_power_table(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Edit the 21 known power signatures."""
+        """Edit off and stationary power with one oscillation increment."""
         errors: dict[str, str] = {}
         if user_input is not None:
+            if user_input.get(CONF_RESTORE_DEFAULT_POWER_TABLE) is True:
+                options = merge_power_table_options(
+                    self.config_entry.options, PowerSignatureTable.from_options({})
+                )
+                return self.async_create_entry(data=options)
             try:
-                _validate_power_table(user_input)
+                table = _validate_power_table(user_input)
             except vol.Invalid:
                 errors["base"] = "invalid_power_table"
             else:
-                options = dict(self.config_entry.options)
-                options.update(user_input)
+                options = merge_power_table_options(self.config_entry.options, table)
                 return self.async_create_entry(data=options)
 
         defaults = PowerSignatureTable.from_options(
             self.config_entry.options
         ).as_options()
-        fields: dict[vol.Marker, NumberSelector] = {
-            vol.Required(
+        # Optional UI fields allow saving a reset even if a number was cleared.
+        # Their defaults still preserve existing values for normal submissions.
+        fields: dict[vol.Marker, NumberSelector | type[bool]] = {
+            vol.Optional(CONF_RESTORE_DEFAULT_POWER_TABLE, default=False): bool,
+            vol.Optional(
+                CONF_POWER_OSCILLATION_DELTA,
+                default=defaults[CONF_POWER_OSCILLATION_DELTA],
+            ): _power_input(),
+            vol.Optional(
                 CONF_POWER_OFF, default=defaults[CONF_POWER_OFF]
-            ): _power_input()
+            ): _power_input(),
         }
         for speed in range(1, SPEED_COUNT + 1):
-            for oscillating in (False, True):
-                key = power_signature_key(speed, oscillating)
-                fields[vol.Required(key, default=defaults[key])] = _power_input()
+            key = power_signature_key(speed, False)
+            fields[vol.Optional(key, default=defaults[key])] = _power_input()
 
         return self.async_show_form(
             step_id="power_table",
-            data_schema=vol.Schema(fields),
+            data_schema=_PowerTableSchema(fields),
             errors=errors,
         )
+
+
+class _PowerTableSchema(vol.Schema):
+    """Discard ignored power fields before HA validates their number selectors."""
+
+    def __call__(self, data: Any) -> dict[str, Any]:
+        if (
+            isinstance(data, dict)
+            and data.get(CONF_RESTORE_DEFAULT_POWER_TABLE) is True
+        ):
+            return {CONF_RESTORE_DEFAULT_POWER_TABLE: True}
+        return super().__call__(data)
 
 
 def _power_input() -> NumberSelector:
@@ -251,23 +307,23 @@ def _power_input() -> NumberSelector:
         NumberSelectorConfig(
             min=0,
             max=100,
-            step=0.1,
+            step=0.01,
             unit_of_measurement="W",
             mode=NumberSelectorMode.BOX,
         )
     )
 
 
-def _validate_power_table(values: dict[str, Any]) -> None:
-    """Reject internally contradictory signature tables."""
+def _validate_power_table(values: dict[str, Any]) -> PowerSignatureTable:
+    """Normalize and validate a signature table at two-decimal precision."""
     table = PowerSignatureTable.from_options(values)
     stationary = [table.speeds[(speed, False)] for speed in range(1, 11)]
-    oscillating = [table.speeds[(speed, True)] for speed in range(1, 11)]
     if table.off >= stationary[0]:
         raise vol.Invalid("Off power must be lower than speed 1")
     if any(left >= right for left, right in pairwise(stationary)):
         raise vol.Invalid("Stationary signatures must increase with speed")
-    if any(left >= right for left, right in pairwise(oscillating)):
-        raise vol.Invalid("Oscillating signatures must increase with speed")
-    if any(on <= off for off, on in zip(stationary, oscillating, strict=True)):
-        raise vol.Invalid("Oscillating power must exceed stationary power")
+    if table.oscillation_delta <= 0:
+        raise vol.Invalid("Oscillation power increment must be positive")
+    if table.speeds[(SPEED_COUNT, True)] >= 100:
+        raise vol.Invalid("Oscillating power must remain below 100 W")
+    return table
