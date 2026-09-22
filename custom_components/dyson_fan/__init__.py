@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from hashlib import sha256
@@ -94,7 +95,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: DysonFanConfigEntry) -> 
     )
     try:
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    except Exception:
+    except Exception, asyncio.CancelledError:
         await controller.async_shutdown()
         raise
     return True

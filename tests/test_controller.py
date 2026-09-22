@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from homeassistant.core import Context, HomeAssistant, State
@@ -174,6 +174,58 @@ async def test_feedback_burst_runs_generic_action(hass: HomeAssistant) -> None:
     assert len(events) == 1
     assert controller.feedback_burst_configured
     await controller.async_shutdown()
+
+
+async def test_invalid_burst_is_rejected_before_scripts_are_created(
+    hass: HomeAssistant,
+) -> None:
+    """A malformed optional action must not leave the four IR scripts behind."""
+    entry = _entry()
+    data = dict(entry.data)
+    data[CONF_FEEDBACK_BURST_ACTION] = "invalid action"
+    controller = DysonFanController(hass, entry, data)
+    controller._store.async_save = AsyncMock()
+    with patch("custom_components.dyson_fan.controller.Script") as script:
+        with pytest.raises(ValueError, match="not a Home Assistant action"):
+            await controller.async_start()
+    script.assert_not_called()
+    controller._store.async_save.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "error", [RuntimeError("setup failed"), asyncio.CancelledError()]
+)
+async def test_partial_startup_cleans_scripts_and_listeners_without_saving(
+    hass: HomeAssistant, error: BaseException
+) -> None:
+    """Failed/cancelled setup releases allocated resources, preserving storage."""
+    entry = _entry()
+    controller = DysonFanController(hass, entry, entry.data)
+    controller._store.async_load = AsyncMock(return_value={"last_speed": 7})
+    controller._store.async_save = AsyncMock()
+    scripts = [Mock(async_unload=AsyncMock()) for _ in range(4)]
+    unsubscribe = Mock()
+    with (
+        patch("custom_components.dyson_fan.controller.Script", side_effect=scripts),
+        patch(
+            "custom_components.dyson_fan.controller.async_track_state_change_event",
+            return_value=unsubscribe,
+        ),
+        patch(
+            "custom_components.dyson_fan.controller.async_track_state_report_event",
+            side_effect=error,
+        ),
+        pytest.raises(type(error)),
+    ):
+        await controller.async_start()
+
+    unsubscribe.assert_called_once()
+    for script in scripts:
+        script.async_unload.assert_awaited_once()
+    assert not controller._actions
+    assert not controller._unsubscribers
+    assert controller.last_speed == 7
+    controller._store.async_save.assert_not_called()
 
 
 @pytest.mark.parametrize("supersede", [False, True])

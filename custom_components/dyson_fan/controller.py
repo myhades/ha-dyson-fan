@@ -225,6 +225,16 @@ class DysonFanController:
 
     async def async_start(self) -> None:
         """Load persistent data, prepare actions, and subscribe to feedback."""
+        try:
+            await self._async_start()
+        except Exception, asyncio.CancelledError:
+            # A failed or cancelled setup must not leave scripts/listeners alive
+            # or overwrite speed memory before storage has been loaded.
+            await self.async_shutdown(persist=False)
+            raise
+
+    async def _async_start(self) -> None:
+        """Validate all actions before allocating runtime resources."""
         stored = await self._store.async_load()
         if stored and isinstance(stored.get("last_speed"), int):
             speed = int(stored["last_speed"])
@@ -238,6 +248,13 @@ class DysonFanController:
                 self.hass, deepcopy(raw_sequence)
             )
 
+        validated_burst = None
+        if burst_config := self._action_configs.get(CONF_FEEDBACK_BURST_ACTION):
+            raw_sequence = _normalize_action_sequence(burst_config)
+            validated_burst = await async_validate_actions_config(
+                self.hass, deepcopy(raw_sequence)
+            )
+
         for command, validated in validated_actions.items():
             self._actions[command] = Script(
                 self.hass,
@@ -248,35 +265,31 @@ class DysonFanController:
                 logger=self._action_logger,
             )
 
-        if burst_config := self._action_configs.get(CONF_FEEDBACK_BURST_ACTION):
-            raw_sequence = _normalize_action_sequence(burst_config)
-            validated = await async_validate_actions_config(
-                self.hass, deepcopy(raw_sequence)
-            )
+        if validated_burst is not None:
             self._feedback_burst_action = Script(
                 self.hass,
-                validated,
+                validated_burst,
                 f"{self.entry.title} feedback burst",
                 DOMAIN,
                 log_exceptions=True,
                 logger=self._action_logger,
             )
 
-        self._unsubscribers.extend(
-            (
-                async_track_state_change_event(
-                    self.hass, self.power_sensor, self._async_on_state_changed
-                ),
-                async_track_state_report_event(
-                    self.hass, self.power_sensor, self._async_on_state_reported
-                ),
+        self._unsubscribers.append(
+            async_track_state_change_event(
+                self.hass, self.power_sensor, self._async_on_state_changed
+            )
+        )
+        self._unsubscribers.append(
+            async_track_state_report_event(
+                self.hass, self.power_sensor, self._async_on_state_reported
             )
         )
 
         if current := self.hass.states.get(self.power_sensor):
             self._async_process_power_state(current)
 
-    async def async_shutdown(self) -> None:
+    async def async_shutdown(self, *, persist: bool = True) -> None:
         """Stop work, unsubscribe listeners, and persist remembered speed."""
         self._shutting_down = True
         for unsubscribe in self._unsubscribers:
@@ -299,7 +312,8 @@ class DysonFanController:
         if self._feedback_burst_action is not None:
             await self._feedback_burst_action.async_unload()
             self._feedback_burst_action = None
-        await self._store.async_save(self._storage_data())
+        if persist:
+            await self._store.async_save(self._storage_data())
 
     @callback
     def async_add_listener(self, listener: ControllerListener) -> CALLBACK_TYPE:
