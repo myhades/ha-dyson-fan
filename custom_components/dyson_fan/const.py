@@ -29,6 +29,7 @@ ACTION_KEYS: Final = (
 CONF_MAX_ATTEMPTS: Final = "max_attempts"
 CONF_IR_SEND_INTERVAL: Final = "ir_send_interval"
 CONF_CALIBRATION_MODE: Final = "calibration_mode"
+CONF_RESTORE_DEFAULT_POWER_TABLE: Final = "restore_default_power_table"
 
 
 class CalibrationMode(StrEnum):

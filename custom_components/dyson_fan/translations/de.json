@@ -69,6 +69,7 @@
         "title": "Leistungstabelle",
         "description": "Zuerst die Mehrleistung beim Schwenken eingeben, dann die Leistung im ausgeschalteten Zustand und für Stufe 1 bis 10 ohne Schwenken.",
         "data": {
+          "restore_default_power_table": "Standardwerte wiederherstellen",
           "power_oscillation_delta": "Mehrleistung beim Schwenken",
           "power_off": "Aus",
           "power_speed_1_stationary": "Stufe 1",
@@ -81,6 +82,9 @@
           "power_speed_8_stationary": "Stufe 8",
           "power_speed_9_stationary": "Stufe 9",
           "power_speed_10_stationary": "Stufe 10"
+        },
+        "data_description": {
+          "restore_default_power_table": "Beim Speichern die Standardtabelle laden und die Werte unten ignorieren. Andere Einstellungen bleiben unverändert."
         }
       }
     },

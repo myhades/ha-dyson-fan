@@ -69,6 +69,7 @@
         "title": "功率表",
         "description": "依次输入摆风功率增量、关机功率和 1 至 10 档不摆风功率。",
         "data": {
+          "restore_default_power_table": "恢复出厂默认值",
           "power_oscillation_delta": "摆风功率增量",
           "power_off": "关机",
           "power_speed_1_stationary": "1 档，不摆风",
@@ -81,6 +82,9 @@
           "power_speed_8_stationary": "8 档，不摆风",
           "power_speed_9_stationary": "9 档，不摆风",
           "power_speed_10_stationary": "10 档，不摆风"
+        },
+        "data_description": {
+          "restore_default_power_table": "保存时恢复内置功率表，忽略下方输入，其他设置不变。"
         }
       }
     },

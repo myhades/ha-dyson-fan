@@ -37,6 +37,7 @@ from .const import (
     CONF_POWER_OSCILLATION_DELTA,
     CONF_POWER_SENSOR,
     CONF_POWER_TOGGLE_ACTION,
+    CONF_RESTORE_DEFAULT_POWER_TABLE,
     CONF_SPEED_DOWN_ACTION,
     CONF_SPEED_UP_ACTION,
     DEFAULT_CALIBRATION_MODE,
@@ -249,6 +250,11 @@ class DysonFanOptionsFlow(config_entries.OptionsFlowWithReload):
         """Edit off and stationary power with one oscillation increment."""
         errors: dict[str, str] = {}
         if user_input is not None:
+            if user_input.get(CONF_RESTORE_DEFAULT_POWER_TABLE) is True:
+                options = merge_power_table_options(
+                    self.config_entry.options, PowerSignatureTable.from_options({})
+                )
+                return self.async_create_entry(data=options)
             try:
                 table = _validate_power_table(user_input)
             except vol.Invalid:
@@ -260,24 +266,39 @@ class DysonFanOptionsFlow(config_entries.OptionsFlowWithReload):
         defaults = PowerSignatureTable.from_options(
             self.config_entry.options
         ).as_options()
-        fields: dict[vol.Marker, NumberSelector] = {
-            vol.Required(
+        # Optional UI fields allow saving a reset even if a number was cleared.
+        # Their defaults still preserve existing values for normal submissions.
+        fields: dict[vol.Marker, NumberSelector | type[bool]] = {
+            vol.Optional(CONF_RESTORE_DEFAULT_POWER_TABLE, default=False): bool,
+            vol.Optional(
                 CONF_POWER_OSCILLATION_DELTA,
                 default=defaults[CONF_POWER_OSCILLATION_DELTA],
             ): _power_input(),
-            vol.Required(
+            vol.Optional(
                 CONF_POWER_OFF, default=defaults[CONF_POWER_OFF]
             ): _power_input(),
         }
         for speed in range(1, SPEED_COUNT + 1):
             key = power_signature_key(speed, False)
-            fields[vol.Required(key, default=defaults[key])] = _power_input()
+            fields[vol.Optional(key, default=defaults[key])] = _power_input()
 
         return self.async_show_form(
             step_id="power_table",
-            data_schema=vol.Schema(fields),
+            data_schema=_PowerTableSchema(fields),
             errors=errors,
         )
+
+
+class _PowerTableSchema(vol.Schema):
+    """Discard ignored power fields before HA validates their number selectors."""
+
+    def __call__(self, data: Any) -> dict[str, Any]:
+        if (
+            isinstance(data, dict)
+            and data.get(CONF_RESTORE_DEFAULT_POWER_TABLE) is True
+        ):
+            return {CONF_RESTORE_DEFAULT_POWER_TABLE: True}
+        return super().__call__(data)
 
 
 def _power_input() -> NumberSelector:

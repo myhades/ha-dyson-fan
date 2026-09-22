@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from homeassistant import config_entries
@@ -10,7 +10,7 @@ from homeassistant.components.frontend import DATA_EXTRA_MODULE_URL
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import STATE_OFF, STATE_UNAVAILABLE
 from homeassistant.core import HomeAssistant
-from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.data_entry_flow import FlowResultType, InvalidData
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry, mock_component
 
@@ -18,11 +18,14 @@ from custom_components.dyson_fan import async_migrate_entry
 from custom_components.dyson_fan.const import (
     CONF_CALIBRATION_MODE,
     CONF_FEEDBACK_BURST_ACTION,
+    CONF_IR_SEND_INTERVAL,
+    CONF_MAX_ATTEMPTS,
     CONF_OSCILLATION_TOGGLE_ACTION,
     CONF_POWER_OFF,
     CONF_POWER_OSCILLATION_DELTA,
     CONF_POWER_SENSOR,
     CONF_POWER_TOGGLE_ACTION,
+    CONF_RESTORE_DEFAULT_POWER_TABLE,
     CONF_SPEED_DOWN_ACTION,
     CONF_SPEED_UP_ACTION,
     DOMAIN,
@@ -171,6 +174,7 @@ async def test_power_table_input_is_rounded_before_validation_and_storage(
     )
     assert result["type"] is FlowResultType.FORM
     assert [marker.schema for marker in result["data_schema"].schema] == [
+        CONF_RESTORE_DEFAULT_POWER_TABLE,
         CONF_POWER_OSCILLATION_DELTA,
         CONF_POWER_OFF,
         *(power_signature_key(speed, False) for speed in range(1, 11)),
@@ -199,6 +203,91 @@ async def test_power_table_input_is_rounded_before_validation_and_storage(
 
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "invalid_power_table"}
+
+
+@pytest.mark.parametrize(
+    "ignored_values",
+    [
+        {},
+        {
+            CONF_POWER_OFF: "invalid",
+            CONF_POWER_OSCILLATION_DELTA: None,
+            power_signature_key(1, False): "",
+            power_signature_key(2, False): -5,
+            power_signature_key(10, False): 1000,
+        },
+    ],
+)
+async def test_restore_factory_power_table_ignores_inputs(
+    hass: HomeAssistant, ignored_values: dict[str, object]
+) -> None:
+    """Reset bypasses both selector and table validation without resetting controls."""
+    original_data = _valid_input()
+    control_options = {
+        CONF_MAX_ATTEMPTS: 4,
+        CONF_IR_SEND_INTERVAL: 0.8,
+        CONF_CALIBRATION_MODE: CalibrationMode.FULL,
+    }
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        version=3,
+        data=original_data,
+        options={
+            **control_options,
+            CONF_POWER_OFF: 2.0,
+            CONF_POWER_OSCILLATION_DELTA: 4.0,
+            power_signature_key(1, False): 6.0,
+            power_signature_key(1, True): 10.0,
+        },
+    )
+    entry.add_to_hass(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "power_table"}
+    )
+    fields = list(result["data_schema"].schema)
+    assert fields[0].schema == CONF_RESTORE_DEFAULT_POWER_TABLE
+    assert fields[0].default() is False
+
+    with patch(
+        "custom_components.dyson_fan.config_flow._validate_power_table"
+    ) as validate:
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            {CONF_RESTORE_DEFAULT_POWER_TABLE: True, **ignored_values},
+        )
+    validate.assert_not_called()
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert dict(entry.options) == {
+        **control_options,
+        **PowerSignatureTable.from_options({}).as_options(),
+    }
+    assert dict(entry.data) == original_data
+
+    # Reset is an instruction for one save, not a persistent option.
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "power_table"}
+    )
+    assert next(iter(result["data_schema"].schema)).default() is False
+
+
+async def test_power_table_still_validates_numbers_without_reset(
+    hass: HomeAssistant,
+) -> None:
+    """The reset bypass does not weaken validation for normal edits."""
+    entry = MockConfigEntry(domain=DOMAIN, version=3, data=_valid_input())
+    entry.add_to_hass(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "power_table"}
+    )
+    with pytest.raises(InvalidData):
+        await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            {CONF_RESTORE_DEFAULT_POWER_TABLE: False, CONF_POWER_OFF: "invalid"},
+        )
+    assert not entry.options
 
 
 async def test_legacy_power_table_migrates_to_shared_oscillation_delta(
