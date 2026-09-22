@@ -39,6 +39,7 @@ from custom_components.dyson_fan.power import PowerSignatureTable
 def mock_frontend(hass: HomeAssistant) -> None:
     """Keep flow tests independent of the optional frontend distribution."""
     mock_component(hass, "frontend")
+    mock_component(hass, "http")
     hass.http = Mock()
     hass.http.async_register_static_paths = AsyncMock()
     hass.data[DATA_EXTRA_MODULE_URL] = set()

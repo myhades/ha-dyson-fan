@@ -15,12 +15,14 @@ from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryError, HomeAssistantError
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
     ACTION_KEYS,
     CONF_FEEDBACK_BURST_ACTION,
+    DOMAIN,
     PLATFORMS,
     STORAGE_KEY_PREFIX,
     STORAGE_VERSION,
@@ -30,6 +32,7 @@ from .power import PowerSignatureTable, merge_power_table_options
 
 _LOGGER = logging.getLogger(__name__)
 _DATA_ICON_AVAILABLE = "dyson_fan_icon_available"
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
 @dataclass(slots=True)
