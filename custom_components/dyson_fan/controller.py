@@ -864,7 +864,7 @@ class DysonFanController:
         oscillation_delta: float,
         reference_table: PowerSignatureTable,
     ) -> CalibrationResult:
-        """Measure every stationary speed and verify the final endpoint."""
+        """Measure every stationary speed, stopping after speed 10."""
         reference_stationary = [
             reference_table.speeds[(speed, False)] for speed in range(1, 11)
         ]
@@ -896,16 +896,6 @@ class DysonFanController:
                 )
             stationary[speed] = measured
 
-        confirmed_speed_10 = await self._async_find_endpoint(
-            Command.SPEED_UP, "speed_10_endpoint", revision
-        )
-        if abs(confirmed_speed_10 - stationary[10]) > self._calibration_threshold(
-            confirmed_speed_10, stationary[10]
-        ):
-            raise CalibrationError(
-                "The measured speed sequence did not end at speed 10; "
-                "an infrared command was probably missed"
-            )
         self.supposed = FanState(True, 10, False)
         return build_full_calibrated_table(
             off_watts,

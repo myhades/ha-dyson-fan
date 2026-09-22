@@ -173,7 +173,7 @@ async def test_endpoint_that_keeps_moving_is_rejected(hass: HomeAssistant) -> No
         await controller._async_find_endpoint(Command.SPEED_DOWN, "speed_1", 1)
 
 
-async def test_full_mode_measures_each_speed_and_confirms_endpoint(
+async def test_full_mode_measures_each_speed_without_extra_endpoint_commands(
     hass: HomeAssistant,
 ) -> None:
     """Full mode sends one command per speed and keeps each measurement."""
@@ -198,6 +198,7 @@ async def test_full_mode_measures_each_speed_and_confirms_endpoint(
     )
 
     assert controller._async_calibration_send.await_count == 9
+    controller._async_find_endpoint.assert_not_awaited()
     assert all(
         call.args[0] is Command.SPEED_UP
         for call in controller._async_calibration_send.await_args_list
