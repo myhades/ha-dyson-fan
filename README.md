@@ -38,6 +38,8 @@ Then, navigate to "HACS" > "Dyson Fan" and install the integration.
 
 Download the repository and copy the `/custom_components/dyson_fan` folder into your Home Assistant `/config/custom_components` directory.
 
+> If the fan icon is missing after installation or an update, refresh the page or clear your browser cache.
+
 ## Configuration
 
 To add the integration, navigate to "Settings" > "Devices & services" > "Add integration" > "Dyson Fan", or use the My button below. Then follow the configuration flow.

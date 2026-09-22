@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, Mock
+
+import pytest
 from homeassistant import config_entries
+from homeassistant.components.frontend import DATA_EXTRA_MODULE_URL
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import STATE_OFF, STATE_UNAVAILABLE
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from homeassistant.helpers import entity_registry as er
+from pytest_homeassistant_custom_component.common import MockConfigEntry, mock_component
 
 from custom_components.dyson_fan import async_migrate_entry
 from custom_components.dyson_fan.const import (
@@ -25,6 +30,15 @@ from custom_components.dyson_fan.const import (
     power_signature_key,
 )
 from custom_components.dyson_fan.power import PowerSignatureTable
+
+
+@pytest.fixture(autouse=True)
+def mock_frontend(hass: HomeAssistant) -> None:
+    """Keep flow tests independent of the optional frontend distribution."""
+    mock_component(hass, "frontend")
+    hass.http = Mock()
+    hass.http.async_register_static_paths = AsyncMock()
+    hass.data[DATA_EXTRA_MODULE_URL] = set()
 
 
 def _valid_input() -> dict[str, object]:
@@ -54,6 +68,9 @@ async def test_user_flow(hass: HomeAssistant) -> None:
     await hass.async_block_till_done()
     assert result["result"].state is ConfigEntryState.LOADED
     assert hass.states.get("fan.dyson_fan").state == STATE_UNAVAILABLE
+    assert hass.states.get("fan.dyson_fan").attributes["icon"] == "dyson-fan:fan"
+    hass.http.async_register_static_paths.assert_awaited_once()
+    assert len(hass.data[DATA_EXTRA_MODULE_URL]) == 1
     assert hass.states.get("button.dyson_fan_calibrate_power_table") is not None
     # Repeated writes of the same wattage arrive through state_reported and must
     # count as separate feedback samples.
@@ -67,6 +84,14 @@ async def test_user_flow(hass: HomeAssistant) -> None:
     hass.states.async_set("sensor.dyson_power", "100.1", {"unit_of_measurement": "W"})
     await hass.async_block_till_done()
     assert hass.states.get("fan.dyson_fan").state == STATE_UNAVAILABLE
+
+    # Reloads do not register routes again or replace an explicit user icon.
+    registry = er.async_get(hass)
+    registry.async_update_entity("fan.dyson_fan", icon="mdi:fan")
+    assert await hass.config_entries.async_reload(result["result"].entry_id)
+    await hass.async_block_till_done()
+    assert hass.states.get("fan.dyson_fan").attributes["icon"] == "mdi:fan"
+    hass.http.async_register_static_paths.assert_awaited_once()
 
 
 async def test_empty_action_is_rejected(hass: HomeAssistant) -> None:
