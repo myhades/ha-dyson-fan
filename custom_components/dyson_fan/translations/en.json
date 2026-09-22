@@ -69,7 +69,7 @@
         "title": "Power table",
         "description": "Enter the oscillation power increment followed by off and stationary power for speeds 1 through 10.",
         "data": {
-          "restore_default_power_table": "Restore factory defaults",
+          "restore_default_power_table": "Restore the built-in power table on submit",
           "power_oscillation_delta": "Oscillation power increment",
           "power_off": "Off",
           "power_speed_1_stationary": "Speed 1, stationary",
@@ -82,9 +82,6 @@
           "power_speed_8_stationary": "Speed 8, stationary",
           "power_speed_9_stationary": "Speed 9, stationary",
           "power_speed_10_stationary": "Speed 10, stationary"
-        },
-        "data_description": {
-          "restore_default_power_table": "On save, restore the built-in power table and ignore the values below. Other settings stay unchanged."
         }
       }
     },
