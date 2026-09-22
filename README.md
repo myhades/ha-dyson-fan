@@ -7,15 +7,13 @@
 
 ![Dyson Fan](assets/dyson_fan_repo_logo.png)
 
-Dyson Fan integrates the Dyson AM07 into Home Assistant with fast, real-world state feedback.
+Dyson Fan integrates the Dyson AM07 into Home Assistant with real, rapid feedback.
 
 ## Requirements
 
-- A smart plug dedicated to the fan that reports power readings in W or another power unit such as kW. Both fast reports and intervals around 10 seconds are supported; faster reports shorten feedback and calibration waits.
-- An infrared (IR) blaster.
+- A smart plug dedicated to the fan that reports power readings.
+- An infrared blaster.
 - A Dyson AM07 fan.
-
-Readings without a unit are treated as W. Negative readings use their absolute value; values above 100 W are treated as invalid feedback.
 
 ## Installation
 
@@ -27,8 +25,8 @@ Choose your preferred installation method, and reboot Home Assistant afterward.
 
 This repository is not in the default list yet. To add it, use the My button below, or navigate to "HACS" > "Overflow menu" > "Custom repositories" and enter:
 
-- **Repository:** `https://github.com/myhades/ha-dyson-fan`
-- **Type:** Integration
+- `Repository`: `https://github.com/myhades/ha-dyson-fan`
+- `Type`: Integration
 
 Then, navigate to "HACS" > "Dyson Fan" and install the integration.
 
@@ -59,48 +57,61 @@ data:
 
 Each configured control action should send its corresponding IR command exactly once. The integration repeats the speed action when multiple steps are required. To change the power sensor or any configured action, select "Reconfigure" from the integration menu.
 
-After setup, the fan entity becomes available once several power reports establish a stable state.
-While the fan is off, its speed cannot be observed from power readings, so the integration remembers the last known speed for the next power-on.
+After setup, the fan entity becomes available once several power reports establish a stable state. While the fan is off, its speed cannot be observed from power readings, so the integration remembers the last known speed for the next power-on.
 
 ## Calibration
 
 After configuring the integration, run the initial calibration by pressing the `Calibrate power table` button. This adapts the included power table to your setup. In my experience, repeating calibration every two weeks helps maintain long-term feedback accuracy.
 
-The calibration process turns the fan off, waits for the power-off cycle to clear oscillation, drives it to stationary speed 1, measures the oscillation power increment, and power-cycles it again to clear oscillation. Endpoints mode then measures speed 10 and shifts and scales the current power curve, while Full mode measures every remaining speed, stopping at speed 10 without extra speed-up commands. The previous state is then restored. This takes several minutes. Do not control the fan manually with its onboard button or remote during calibration. Any fan command issued through Home Assistant safely cancels calibration.
+This takes several minutes. Do not control the fan manually with its onboard button or remote during calibration. Any fan command issued through Home Assistant safely cancels calibration.
 
-If feedback is still inaccurate after Endpoints calibration, your setup's power curve may not scale uniformly. In that case, select Full under "Options" > "Control behavior", or manually enter the oscillation increment, off power, and stationary power for speeds 1 through 10 under "Options" > "Power table".
+If feedback is still inaccurate after calibrating in "Endpoints" mode, your setup's power curve may not scale uniformly. In that case, switch the calibration mode to "Full" under "Options" > "Control behavior", or manually enter the oscillation increment, off power, and stationary power for speeds 1 through 10 under "Options" > "Power table".
+
+<details>
+<summary>How calibration works</summary>
+
+The integration turns the fan off if it is running, waits several seconds for oscillation to reset, and measures its off-state power. It turns the fan on and sends repeated speed-down commands to reach speed 1, checking that further commands no longer reduce power. After measuring power at speed 1 without oscillation, it enables oscillation and measures the power increment. Another off/on cycle clears oscillation before speed calibration continues.
+
+- In "Endpoints" mode, the integration drives the fan straight to speed 10 and checks that further speed-up commands no longer increase power. It then uses endpoint measurements to shift and scale the current power curve, thus preserving its shape and any previous calibration or manual adjustments. 
+
+- In "Full" mode, the integration sends one speed-up command for each speed from 2 to 10, waits for power to increase and stabilize, and records each measurement. The table is then built from the measured values.
+
+Each measurement uses multiple power readings, with outliers removed before averaging. The waiting time adapts to the sensor's reporting interval. The new table is saved only after the measurements pass validation; a failed or interrupted measurement leaves the existing table unchanged. After calibration, the integration attempts to restore the fan's previous power, speed, and oscillation settings unless a new Home Assistant command has taken over.
+
+</details>
+
+<details>
+<summary>Automation and logging</summary>
 
 With info logging enabled, calibration logs the current power table at the start and the new table after it is successfully applied.
 
 Automations can listen for the `dyson_fan_calibration_finished` event without enabling `Diagnostics`. It fires after calibration and the attempt to restore the previous fan state, and includes `entity_id`, `device_id`, `config_entry_id`, `mode`, `result`, `error`, `started_at`, and `finished_at`. Filter by your fan's `entity_id` when more than one fan is configured. The result is `success`, `failed`, or `cancelled`; `success_restore_failed`, `success_restore_cancelled`, and `failed_restore_cancelled` distinguish restoration problems. A successful calibration remains saved even if restoring the fan is interrupted or fails.
 
+</details>
+
 ## Additional Configuration
 
 ### Options
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| Maximum attempts | 1 | Number of complete control attempts |
-| Infrared send interval | 0.35 s | Time between consecutive IR actions |
-| Calibration mode | Endpoints | Measure only the endpoints or every speed |
-| Power table | | Oscillation increment, off power, and stationary power for speeds 1 through 10 |
+| Option           | Default   | Description                                    |
+|------------------|-----------|------------------------------------------------|
+| Maximum attempts | 1         | Increase this if IR commands are occasionally missed; 1 disables retries.|
+| IR send interval | 0.35s     | Time between consecutive IR actions. Adjust this to suit your IR transmitter: too short an interval may cause missed commands, while a longer interval causes slow feedback. Calibration uses an interval of at least 1 second. |
+| Calibration mode | Endpoints | "Endpoints" mode uses measurements at speeds 1 and 10 to shift and scale the current power curve. "Full" mode measures all ten speeds individually and takes longer. |
+| Power table      | N/A       | Power values in W used to identify the fan's state: the oscillation increment, off power, and stationary power at speeds 1–10. Values can be edited manually. Select the restore checkbox and submit to replace them with the built-in table.|
 
 ### Faster Feedback
 
-The optional feedback burst action runs before the integration waits for fresh power readings during normal control and calibration. Most off-the-shelf smart plugs cannot provide this behavior with their stock firmware.
+The integration calls the optional feedback burst action whenever it needs faster power reporting during fan control or calibration. Most off-the-shelf smart plugs cannot provide this behavior with their stock firmware.
 
 The best option is a smart plug that supports ESPHome or similarly customizable firmware. This gives you control over the reporting frequency and lets you implement features like feedback burst. An ESPHome configuration example is included at
 [`assets/esphome_power_burst.yaml`](assets/esphome_power_burst.yaml).
 
 The integration works without this action; feedback will simply take longer.
-The action should request faster reporting and return promptly. It is stopped after five seconds or when a newer fan request supersedes it; the integration then continues using the available power reports.
 
 ### Diagnostics Sensor
 
-If you encounter an issue, enable the `Diagnostics` sensor, which is disabled by default.
-
-The sensor exposes the requested, predicted, decoded, and confirmed states, along with the current power signature, attempts, timestamps, and last error.
-Raw diagnostic readings refresh at most once every five seconds, while control and calibration status changes appear immediately. High-frequency debugging attributes are excluded from history; power sampling and fan feedback are unaffected.
+If you encounter an issue, enable the `Diagnostics` sensor, which is disabled by default. The sensor exposes the requested, predicted, decoded, and confirmed states, along with the current power signature, attempts, timestamps, and last error.
 
 ## Feedback
 
