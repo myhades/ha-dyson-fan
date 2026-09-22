@@ -16,7 +16,6 @@ async def test_raw_reports_are_throttled_but_calibration_result_is_immediate(
         calibrating=False,
         calibration_result=None,
         calibration_step=None,
-        can_undo_calibration=False,
     )
     entry = SimpleNamespace(
         entry_id="test",

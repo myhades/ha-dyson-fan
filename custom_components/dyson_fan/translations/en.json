@@ -100,9 +100,6 @@
     "button": {
       "calibrate_power_table": {
         "name": "Calibrate power table"
-      },
-      "undo_calibration": {
-        "name": "Undo last calibration"
       }
     },
     "sensor": {

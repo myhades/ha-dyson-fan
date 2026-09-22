@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from itertools import pairwise
 from unittest.mock import AsyncMock
 
@@ -373,43 +374,6 @@ async def test_calibration_completion_event_follows_restoration(
     )
 
 
-async def test_undo_calibration_survives_restart_and_sends_no_ir(
-    hass: HomeAssistant,
-) -> None:
-    """The previous table is persistent and undo does not move the physical fan."""
-    entry = _entry()
-    entry.add_to_hass(hass)
-    first = DysonFanController(hass, entry, entry.data)
-    await first.async_start()
-    previous = first.decoder.table
-    result = build_calibrated_table(1.3, 5.0, 55.0)
-    await first._async_apply_calibration_result(result)
-    await first.async_shutdown()
-
-    second = DysonFanController(hass, entry, entry.data)
-    await second.async_start()
-    second._async_send_command = AsyncMock()
-    assert second.can_undo_calibration
-    await second.async_undo_calibration()
-    assert second.decoder.table == previous
-    assert not second.can_undo_calibration
-    assert not second.available
-    second._async_send_command.assert_not_called()
-    await second.async_shutdown()
-
-
-async def test_manual_edit_disables_undo(hass: HomeAssistant) -> None:
-    """Undo cannot silently erase a power-table edit after calibration."""
-    entry = _entry()
-    entry.add_to_hass(hass)
-    controller = DysonFanController(hass, entry, entry.data)
-    await controller._async_apply_calibration_result(
-        build_calibrated_table(1.3, 5.0, 55.0)
-    )
-    controller.decoder.table = PowerSignatureTable.from_options({"power_off": 1.8})
-    assert not controller.can_undo_calibration
-
-
 async def test_shutdown_during_restoration_emits_one_final_event(
     hass: HomeAssistant,
 ) -> None:
@@ -525,10 +489,13 @@ async def test_calibration_measures_oscillation_then_power_cycles_again(
 
 async def test_failed_calibration_does_not_change_options(
     hass: HomeAssistant,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A failed run restores state but leaves the configured table untouched."""
     entry = _entry()
     controller = DysonFanController(hass, entry, entry.data)
+    caplog.set_level(logging.INFO, logger="custom_components.dyson_fan.controller")
+    original_table = controller.decoder.table.as_options()
     original_options = dict(entry.options)
     controller.calibrating = True
     controller._calibration_requested = True
@@ -547,16 +514,21 @@ async def test_failed_calibration_does_not_change_options(
     assert entry.options == original_options
     assert controller.calibration_result == "failed"
     assert controller.calibration_error == "bad endpoint"
+    assert f"current power table: {original_table}" in caplog.text
+    assert "new power table:" not in caplog.text
     controller._async_restore_after_calibration.assert_awaited_once()
 
 
 async def test_successful_calibration_commits_whole_table_once(
     hass: HomeAssistant,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Only a complete result atomically replaces the runtime and entry table."""
     entry = _entry()
     entry.add_to_hass(hass)
     controller = DysonFanController(hass, entry, entry.data)
+    caplog.set_level(logging.INFO, logger="custom_components.dyson_fan.controller")
+    original_table = controller.decoder.table.as_options()
     result = build_calibrated_table(1.5, 5.4, 57.54)
     controller.calibrating = True
     controller._calibration_requested = True
@@ -574,6 +546,8 @@ async def test_successful_calibration_commits_whole_table_once(
 
     assert controller.calibration_result == "success"
     assert controller.decoder.table == result.table
+    assert f"current power table: {original_table}" in caplog.text
+    assert f"new power table: {result.table.as_options()}" in caplog.text
     assert all(
         entry.options[key] == value for key, value in result.table.as_options().items()
     )

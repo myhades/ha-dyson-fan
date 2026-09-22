@@ -75,7 +75,6 @@ class DysonFanDiagnosticsSensor(DysonFanEntity, SensorEntity):
             self.controller.calibrating,
             self.controller.calibration_result,
             self.controller.calibration_step,
-            self.controller.can_undo_calibration,
         )
         remaining = DIAGNOSTICS_UPDATE_INTERVAL_SECONDS - (
             monotonic() - self._last_diagnostic_write

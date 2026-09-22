@@ -202,21 +202,11 @@ class DysonFanController:
         self._raw_sequence = 0
         self._raw_samples: deque[tuple[int, float, float]] = deque(maxlen=200)
         self._report_cadence = ReportCadence()
-        self._calibration_backup: dict[str, dict[str, float]] | None = None
         self._target_changed = asyncio.Event()
 
     async def async_start(self) -> None:
         """Load persistent data, prepare actions, and subscribe to feedback."""
         stored = await self._store.async_load()
-        if stored and isinstance(stored.get("calibration_backup"), dict):
-            backup = stored["calibration_backup"]
-            try:
-                self._calibration_backup = {
-                    key: PowerSignatureTable.from_options(backup[key]).as_options()
-                    for key in ("previous", "applied")
-                }
-            except KeyError, TypeError, ValueError:
-                _LOGGER.warning("Ignoring invalid saved calibration backup")
         if stored and isinstance(stored.get("last_speed"), int):
             speed = int(stored["last_speed"])
             if 1 <= speed <= 10:
@@ -662,6 +652,11 @@ class DysonFanController:
                     await previous_worker
             self._check_calibration_revision(revision)
 
+            _LOGGER.info(
+                "Calibration started for %s; current power table: %s",
+                self.entry.entry_id,
+                self.decoder.table.as_options(),
+            )
             self.handled_revision = revision
             self._samples_enabled = False
             self.tracker.reset()
@@ -1049,11 +1044,6 @@ class DysonFanController:
 
     async def _async_apply_calibration_result(self, result: CalibrationResult) -> None:
         """Commit a fully validated calibration to options and runtime state."""
-        self._calibration_backup = {
-            "previous": self.decoder.table.as_options(),
-            "applied": result.table.as_options(),
-        }
-        await self._store.async_save(self._storage_data())
         options = merge_power_table_options(self.entry.options, result.table)
         self.hass.config_entries.async_update_entry(self.entry, options=options)
         self.decoder = PowerDecoder(result.table)
@@ -1068,6 +1058,11 @@ class DysonFanController:
         )
         self.supposed = FanState(True, 10, False)
         self._remember_speed(10)
+        _LOGGER.info(
+            "Calibration succeeded for %s; new power table: %s",
+            self.entry.entry_id,
+            result.table.as_options(),
+        )
 
     async def _async_restore_after_calibration(
         self, restore_target: TargetState
@@ -1302,38 +1297,8 @@ class DysonFanController:
         self._store.async_delay_save(self._storage_data, PERSIST_DELAY_SECONDS)
 
     def _storage_data(self) -> dict[str, Any]:
-        """Persist speed memory and the single undo snapshot together."""
-        return {
-            "last_speed": self.last_speed,
-            "calibration_backup": self._calibration_backup,
-        }
-
-    @property
-    def can_undo_calibration(self) -> bool:
-        """Only undo a calibration which has not been superseded by manual edits."""
-        return bool(
-            self._calibration_backup
-            and self.decoder.table.as_options() == self._calibration_backup["applied"]
-            and not self.calibrating
-            and not self.during_attempt
-        )
-
-    async def async_undo_calibration(self) -> None:
-        """Restore the previous table without sending infrared commands."""
-        if not self.can_undo_calibration or self._calibration_backup is None:
-            raise HomeAssistantError("No calibration is available to undo")
-        table = PowerSignatureTable.from_options(self._calibration_backup["previous"])
-        self.hass.config_entries.async_update_entry(
-            self.entry, options=merge_power_table_options(self.entry.options, table)
-        )
-        self.decoder = PowerDecoder(table)
-        self._calibration_backup = None
-        self.tracker.reset()
-        self.available = False
-        self._feedback_valid = False
-        self.phase = STATE_INITIALIZING
-        await self._store.async_save(self._storage_data())
-        self._notify_listeners()
+        """Persist the last remembered speed."""
+        return {"last_speed": self.last_speed}
 
     @callback
     def _target_base(self) -> TargetState:
@@ -1382,7 +1347,6 @@ class DysonFanController:
             "calibration_started": _as_iso(self.calibration_started),
             "calibration_finished": _as_iso(self.calibration_finished),
             "calibration_mode": self.calibration_mode,
-            "can_undo_calibration": self.can_undo_calibration,
             "report_interval": self._report_cadence.interval,
             "source_valid": self._source_valid,
             "feedback_valid": self._feedback_valid,

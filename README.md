@@ -68,7 +68,7 @@ The calibration process turns the fan off, waits for the power-off cycle to clea
 
 If feedback is still inaccurate after Endpoints calibration, your setup's power curve may not scale uniformly. In that case, select Full under "Options" > "Control behavior", or manually enter the oscillation increment, off power, and stationary power for speeds 1 through 10 under "Options" > "Power table".
 
-The `Undo last calibration` button restores the previous power table without controlling the fan. The backup survives Home Assistant restarts and is replaced after the next successful calibration. Editing the power table manually makes that backup unavailable for undo.
+With info logging enabled, calibration logs the current power table at the start and the new table after it is successfully applied.
 
 Automations can listen for the `dyson_fan_calibration_finished` event without enabling `Diagnostics`. It fires after calibration and the attempt to restore the previous fan state, and includes `entity_id`, `device_id`, `config_entry_id`, `mode`, `result`, `error`, `started_at`, and `finished_at`. Filter by your fan's `entity_id` when more than one fan is configured. The result is `success`, `failed`, or `cancelled`; `success_restore_failed`, `success_restore_cancelled`, and `failed_restore_cancelled` distinguish restoration problems. A successful calibration remains saved even if restoring the fan is interrupted or fails.
 
